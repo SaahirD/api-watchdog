@@ -19,7 +19,40 @@ Most tools (Dependabot, Renovate) watch package/dependency versions. Nobody watc
 - **Phase 2 (Stripe changelog monitoring):** `src/stripe_monitor.py` fetches and parses `docs.stripe.com/changelog`'s embedded `window.__INITIAL_STATE__` JSON (no scraping/headless browser needed), filters to breaking changes, and searches the repo for affected code usage. Verified against the live changelog (880 entries, 69 breaking in the last year).
 - **Phase 3 (fix generation + PR creation):** `src/claude_fixer.py` generates fixes with real Stripe migration guidance in the prompt, validates the result still parses (`compile()` / `node --check`) before accepting it. `src/pr_creator.py` authenticates as the GitHub App installation and opens a real PR. Verified live: opened and closed [PR #1](https://github.com/SaahirD/api-watchdog/pull/1) end-to-end using the real "Removes support for the redirectToCheckout method" changelog entry.
 
-**Next up (not started):** wiring the webhook handler to actually *trigger* `main.py` automatically on a push, instead of running it manually via CLI.
+**Next up (not started): give this a real trigger, not a local one.**
+
+Today `main.py` only runs when manually launched — it has no trigger of its
+own. The originally-planned next step ("wire the push webhook to trigger
+main.py") turns out to be the wrong primary trigger: a push to *this* repo
+says nothing about whether *Stripe* changed anything, which is the actual
+thing being watched for. The plan instead:
+
+1. **Add a scheduled runner** — a GitHub Actions workflow
+   (`.github/workflows/watch.yml`) on a cron schedule (e.g. every 6 hours)
+   running `python src/main.py --create-prs`. Runs in the cloud, doesn't
+   depend on a laptop being on, secrets move to repo Settings → Secrets.
+2. **Demote the webhook** from "primary trigger" to optional — keep it for
+   reacting to PR events later (e.g. detecting when a generated PR is
+   merged/closed, to update the cache), not for deciding *when* to check
+   Stripe.
+3. Once the scheduled runner works unattended, the local Flask/ngrok setup
+   becomes dev-only tooling for testing the webhook path specifically — not
+   part of the always-on loop.
+
+**Before testing with real users** (separate from the above, no rush):
+this is currently a single-tenant dev sandbox — the `api-watchdog-dev`
+GitHub App is installed only on this repo, its webhook is an ngrok tunnel
+that dies when the laptop sleeps, and its private key already leaked once
+into a session transcript (see below). Recommended before onboarding
+anyone else, even though GitHub Apps can technically be multi-tenant on a
+single registration:
+- Register a **separate, real GitHub App** for anything beyond this repo —
+  isolates a dev-key leak from ever touching a real user's install, and
+  keeps dev secrets out of a shared/production `.env`.
+- Give it **real hosting** for the webhook endpoint (Fly.io, Render,
+  Lambda, etc.) — ngrok isn't viable once uptime matters.
+- Think through **Anthropic API cost/billing** once usage scales across
+  multiple users' repos instead of one dev sandbox.
 
 ## Project structure
 
