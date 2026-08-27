@@ -223,28 +223,29 @@ commentary."""
             logger.error(f"Failed to generate fix: {e}")
             return None
 
-    def generate_full_diff(self, change: dict, matches: list) -> str:
+    def generate_fixed_files(self, change: dict, matches: list) -> dict:
         """
-        Generate a real unified diff covering every matched file.
+        Generate fixed content for every matched file.
 
         Groups matches by file, merges nearby matches into shared editable
         windows (see _windows_for_matches), asks Claude for a replacement
-        per window, splices those into an in-memory copy of the file, checks
-        the result still parses (see _validate_syntax), and diffs old vs.
-        new with difflib.
+        per window, splices those into an in-memory copy of the file, and
+        checks the result still parses (see _validate_syntax).
 
         Args:
             change: The Stripe change being fixed
             matches: All code matches for this change
 
         Returns:
-            Unified diff text covering all affected, successfully-validated files
+            {file_path: {'original': str, 'new': str}} for every file whose
+            fix was successfully generated AND passed syntax validation.
+            Files that failed either step are omitted, not included broken.
         """
         by_file = defaultdict(list)
         for m in matches:
             by_file[m['file']].append(m)
 
-        diffs = []
+        fixed_files = {}
         for file_path, file_matches in by_file.items():
             original_lines = self._read_lines(file_path)
             if original_lines is None:
@@ -287,19 +288,44 @@ commentary."""
                 logger.error(f"Generated fix for {file_path} fails to parse, discarding: {error}")
                 continue
 
+            fixed_files[file_path] = {
+                'original': ''.join(original_lines),
+                'new': new_content,
+            }
+
+        return fixed_files
+
+    def diff_for_fixed_files(self, fixed_files: dict) -> str:
+        """
+        Render a unified diff (for display purposes) from an already-computed
+        generate_fixed_files() result. Takes no Claude calls — just formats.
+        """
+        diffs = []
+        for file_path, contents in fixed_files.items():
             diff = difflib.unified_diff(
-                original_lines, new_lines,
+                contents['original'].splitlines(keepends=True),
+                contents['new'].splitlines(keepends=True),
                 fromfile=f"a/{file_path}", tofile=f"b/{file_path}",
             )
             diffs.append(''.join(diff))
-
         return '\n'.join(diffs)
 
-    def generate_pr_description(self, change: dict, matches: list) -> str:
-        """Generate a PR description explaining the fix."""
+    def generate_pr_description(self, change: dict, matches: list, fixed_files: dict) -> str:
+        """
+        Generate a PR description explaining the fix.
+
+        Args:
+            change: The Stripe change being fixed
+            matches: All detected matches (used to count usages per file)
+            fixed_files: {file_path: {...}} — only files actually fixed and
+                validated end up here; matches for a file that failed fix
+                generation or syntax validation aren't claimed as "changed"
+        """
         title = change.get('title', 'Stripe API change')
-        file_count = len(set(m.get('file') for m in matches))
-        match_count = len(matches)
+        fixed_paths = set(fixed_files.keys())
+        relevant_matches = [m for m in matches if m.get('file') in fixed_paths]
+        file_count = len(fixed_paths)
+        match_count = len(relevant_matches)
 
         description = f"""# Fix: {title}
 
@@ -319,8 +345,8 @@ Updates {match_count} usage(s) across {file_count} file(s) to match the new API.
 
 ## Files changed
 """
-        for file_path in sorted(set(m.get('file') for m in matches)):
-            file_matches = [m for m in matches if m.get('file') == file_path]
+        for file_path in sorted(fixed_paths):
+            file_matches = [m for m in relevant_matches if m.get('file') == file_path]
             description += f"- `{file_path}` ({len(file_matches)} change(s))\n"
 
         description += """
@@ -346,13 +372,17 @@ def generate_fix_for_changes(change: dict, matches: list) -> dict:
         matches: All code matches for this change
 
     Returns:
-        {'change', 'diff', 'pr_description', 'affected_files', 'total_changes'}
+        {'change', 'diff', 'pr_description', 'fixed_files', 'affected_files',
+        'total_changes'} — fixed_files is {path: {'original', 'new'}}, the
+        input pr_creator needs to actually push content to a branch.
     """
     fixer = ClaudeFixer()
+    fixed_files = fixer.generate_fixed_files(change, matches)
     return {
         'change': change,
-        'diff': fixer.generate_full_diff(change, matches),
-        'pr_description': fixer.generate_pr_description(change, matches),
-        'affected_files': len(set(m.get('file') for m in matches)),
-        'total_changes': len(matches),
+        'diff': fixer.diff_for_fixed_files(fixed_files),
+        'pr_description': fixer.generate_pr_description(change, matches, fixed_files),
+        'fixed_files': fixed_files,
+        'affected_files': len(fixed_files),
+        'total_changes': len([m for m in matches if m.get('file') in fixed_files]),
     }

@@ -1,8 +1,10 @@
 """Main orchestration for the api-watchdog tool."""
 import os
+import re
 import sys
 import logging
 import argparse
+import subprocess
 from typing import Optional
 from dotenv import load_dotenv
 
@@ -63,19 +65,44 @@ def generate_fixes(pending_changes: list) -> list:
     for change in pending_changes:
         matches = change.get('code_matches', [])
         if not matches:
-            logger.info(f"Skipping {change.get('method')} - no code matches")
+            logger.info(f"Skipping {change.get('title')} - no code matches")
             continue
 
         logger.info(f"Generating fix for {change.get('title')} ({len(matches)} matches)")
 
         try:
             fix_result = generate_fix_for_changes(change, matches)
-            fixes.append(fix_result)
+            if fix_result.get('fixed_files'):
+                fixes.append(fix_result)
+            else:
+                logger.warning(f"No usable fix produced for {change.get('title')}")
         except Exception as e:
             logger.error(f"Failed to generate fix for {change.get('title')}: {e}")
 
     logger.info(f"Generated {len(fixes)} fixes")
     return fixes
+
+
+def detect_github_repo(repo_path: str = '.') -> Optional[str]:
+    """
+    Best-effort detection of "owner/repo" from the git remote, so
+    --create-prs doesn't require typing it out for the common case.
+    Returns None (not a guess) if it can't be determined.
+    """
+    try:
+        result = subprocess.run(
+            ['git', '-C', repo_path, 'remote', 'get-url', 'origin'],
+            capture_output=True, text=True, timeout=10
+        )
+        if result.returncode != 0:
+            return None
+        url = result.stdout.strip()
+        # Handles both git@github.com:owner/repo.git and
+        # https://github.com/owner/repo(.git)
+        m = re.search(r'github\.com[:/]([^/]+)/([^/.]+?)(\.git)?/?$', url)
+        return f"{m.group(1)}/{m.group(2)}" if m else None
+    except Exception:
+        return None
 
 
 def print_fix_summary(fixes: list):
@@ -130,6 +157,24 @@ def main():
         action='store_true',
         help='Enable verbose logging'
     )
+    parser.add_argument(
+        '--create-prs',
+        action='store_true',
+        help='Actually open GitHub pull requests for generated fixes (default: '
+             'print/dry-run only). Requires the GitHub App to be installed on '
+             'the target repo.'
+    )
+    parser.add_argument(
+        '--github-repo',
+        default=None,
+        help='"owner/repo" to open PRs against. Auto-detected from the git '
+             'remote if omitted.'
+    )
+    parser.add_argument(
+        '--base-branch',
+        default='main',
+        help='Branch to open PRs against (default: main)'
+    )
 
     args = parser.parse_args()
 
@@ -150,13 +195,38 @@ def main():
         # Print summary
         print_fix_summary(fixes)
 
-        if fixes:
-            logger.info(f"Successfully generated {len(fixes)} fix(es)")
-            logger.info("Review the fixes above and open a PR when ready")
-            return 0
-        else:
+        if not fixes:
             logger.warning("No fixes could be generated")
             return 1
+
+        logger.info(f"Successfully generated {len(fixes)} fix(es)")
+
+        if not args.create_prs:
+            logger.info("Review the fixes above and re-run with --create-prs when ready")
+            return 0
+
+        github_repo = args.github_repo or detect_github_repo(args.repo)
+        if not github_repo:
+            logger.error(
+                "Could not determine target GitHub repo. Pass --github-repo owner/repo."
+            )
+            return 1
+
+        owner, repo_name = github_repo.split('/', 1)
+        logger.info(f"Opening PR(s) against {github_repo}@{args.base_branch}")
+
+        from pr_creator import create_prs_for_fixes
+        prs = create_prs_for_fixes(owner, repo_name, fixes, base_branch=args.base_branch)
+
+        if not prs:
+            logger.warning("No PRs were opened — check the logs above for why")
+            return 1
+
+        print(f"\nOpened {len(prs)} PR(s):")
+        for pr in prs:
+            print(f"  #{pr['number']}: {pr['url']}")
+
+        return 0
 
     except Exception as e:
         logger.error(f"Unexpected error: {e}", exc_info=True)
