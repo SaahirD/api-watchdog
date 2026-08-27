@@ -1,5 +1,6 @@
-Flask==3.0.0
-python-dotenv==1.0.0
-PyGithub==2.1.1
-anthropic==0.25.1
-requests==2.31.0
+Flask==3.1.3
+python-dotenv==1.2.3
+PyGithub==2.10.0
+PyJWT==2.13.0
+anthropic==1.1.0
+requests==2.34.2

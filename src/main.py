@@ -9,6 +9,10 @@ from dotenv import load_dotenv
 # Add src to path for imports
 sys.path.insert(0, os.path.dirname(__file__))
 
+# Must run before importing claude_fixer — it reads ANTHROPIC_API_KEY from
+# the environment as soon as it's imported.
+load_dotenv()
+
 from stripe_monitor import StripeChangeDetector
 from claude_fixer import generate_fix_for_changes
 
@@ -19,15 +23,14 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-load_dotenv()
 
-
-def check_for_api_changes(repo_path: str = '.') -> list:
+def check_for_api_changes(repo_path: str = '.', days_back: int = 180) -> list:
     """
     Check for API changes and find affected code.
 
     Args:
         repo_path: Path to the repository to analyze
+        days_back: How many days of Stripe changelog history to check
 
     Returns:
         List of changes with detected code matches
@@ -35,7 +38,7 @@ def check_for_api_changes(repo_path: str = '.') -> list:
     logger.info(f"Checking for Stripe API changes in {repo_path}")
 
     detector = StripeChangeDetector()
-    pending_changes = detector.get_pending_changes()
+    pending_changes = detector.get_pending_changes(repo_path=repo_path, days_back=days_back)
 
     if not pending_changes:
         logger.info("No new API changes detected")
@@ -63,13 +66,13 @@ def generate_fixes(pending_changes: list) -> list:
             logger.info(f"Skipping {change.get('method')} - no code matches")
             continue
 
-        logger.info(f"Generating fix for {change.get('method')} ({len(matches)} matches)")
+        logger.info(f"Generating fix for {change.get('title')} ({len(matches)} matches)")
 
         try:
             fix_result = generate_fix_for_changes(change, matches)
             fixes.append(fix_result)
         except Exception as e:
-            logger.error(f"Failed to generate fix for {change.get('method')}: {e}")
+            logger.error(f"Failed to generate fix for {change.get('title')}: {e}")
 
     logger.info(f"Generated {len(fixes)} fixes")
     return fixes
@@ -87,8 +90,8 @@ def print_fix_summary(fixes: list):
 
     for i, fix in enumerate(fixes, 1):
         change = fix.get('change', {})
-        print(f"Fix {i}: {change.get('method', 'Unknown')}")
-        print(f"  Type: {change.get('type', 'unknown')}")
+        print(f"Fix {i}: {change.get('title', 'Unknown change')}")
+        print(f"  Release: {change.get('release', 'unknown')}")
         print(f"  Files affected: {fix.get('affected_files', 0)}")
         print(f"  Total changes: {fix.get('total_changes', 0)}")
         print()
@@ -117,6 +120,12 @@ def main():
         help='Path to repository to analyze (default: current directory)'
     )
     parser.add_argument(
+        '--days-back',
+        type=int,
+        default=180,
+        help='How many days of Stripe changelog history to check (default: 180)'
+    )
+    parser.add_argument(
         '--verbose',
         action='store_true',
         help='Enable verbose logging'
@@ -129,7 +138,7 @@ def main():
 
     try:
         # Check for changes
-        changes = check_for_api_changes(args.repo)
+        changes = check_for_api_changes(args.repo, days_back=args.days_back)
 
         if not changes:
             logger.info("No action needed - repository is up to date")
