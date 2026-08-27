@@ -1,1 +1,13 @@
 .env
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv
+.pytest_cache/
+.stripe_changes_cache.json
+*.log
+.DS_Store
