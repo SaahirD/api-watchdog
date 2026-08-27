@@ -234,3 +234,5 @@ ngrok config check
 - `CLAUDE.md` — Project context and current phase
 - `README.md` — User-facing docs (includes ngrok setup)
 - `TESTING.md` — This file
+
+<!-- webhook delivery test: 2026-08-27T06:42:37Z -->
