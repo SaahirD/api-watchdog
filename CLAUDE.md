@@ -12,32 +12,34 @@ Most tools (Dependabot, Renovate) watch package/dependency versions. Nobody watc
 
 ## Current phase
 
-**Phases 0-3 are complete. The full loop works end-to-end and has been verified against live data, not mocks.**
+**Phases 0-3 are complete and verified against live data, not mocks. Phase 4 (scheduled trigger) is implemented but not yet verified running in Actions.**
 
 - **Phase 0 (validation):** Tested Claude's ability to generate correct fixes for real Stripe API deprecations (handleCardPayment → confirmCardPayment, confirmSetupIntent → confirmCardSetup). Both passed.
 - **Phase 1 (GitHub App integration):** Flask webhook receiver (`src/github_app.py`) with HMAC-SHA256 signature verification. Verified live: a real `git push` triggered a GitHub webhook delivery through ngrok to the local Flask app, confirmed via GitHub's own delivery log (`GET /app/hook/deliveries`).
 - **Phase 2 (Stripe changelog monitoring):** `src/stripe_monitor.py` fetches and parses `docs.stripe.com/changelog`'s embedded `window.__INITIAL_STATE__` JSON (no scraping/headless browser needed), filters to breaking changes, and searches the repo for affected code usage. Verified against the live changelog (880 entries, 69 breaking in the last year).
 - **Phase 3 (fix generation + PR creation):** `src/claude_fixer.py` generates fixes with real Stripe migration guidance in the prompt, validates the result still parses (`compile()` / `node --check`) before accepting it. `src/pr_creator.py` authenticates as the GitHub App installation and opens a real PR. Verified live: opened and closed [PR #1](https://github.com/SaahirD/api-watchdog/pull/1) end-to-end using the real "Removes support for the redirectToCheckout method" changelog entry.
 
-**Next up (not started): give this a real trigger, not a local one.**
+- **Phase 4 (scheduled trigger, implemented — not yet verified live):** `.github/workflows/watch.yml` runs
+  `python src/main.py --create-prs` on a cron schedule (every 12 hours),
+  in GitHub Actions — no laptop required to be on. Secrets
+  (`ANTHROPIC_API_KEY`, `GITHUB_APP_ID`, `GITHUB_PRIVATE_KEY`) live in repo
+  Settings → Secrets → Actions, not just the local `.env`. A
+  `.stripe_changes_cache.json` (see "no database yet" below) is kept warm
+  across ephemeral runners via `actions/cache`, keyed per-run with a
+  prefix `restore-keys` fallback so each run restores the previous run's
+  cache and saves a fresh one. `workflow_dispatch` (manual trigger, with a
+  `create_prs` checkbox) is available for on-demand runs without waiting
+  for the cron.
 
-Today `main.py` only runs when manually launched — it has no trigger of its
-own. The originally-planned next step ("wire the push webhook to trigger
-main.py") turns out to be the wrong primary trigger: a push to *this* repo
-says nothing about whether *Stripe* changed anything, which is the actual
-thing being watched for. The plan instead:
-
-1. **Add a scheduled runner** — a GitHub Actions workflow
-   (`.github/workflows/watch.yml`) on a cron schedule (e.g. every 6 hours)
-   running `python src/main.py --create-prs`. Runs in the cloud, doesn't
-   depend on a laptop being on, secrets move to repo Settings → Secrets.
-2. **Demote the webhook** from "primary trigger" to optional — keep it for
-   reacting to PR events later (e.g. detecting when a generated PR is
-   merged/closed, to update the cache), not for deciding *when* to check
-   Stripe.
-3. Once the scheduled runner works unattended, the local Flask/ngrok setup
-   becomes dev-only tooling for testing the webhook path specifically — not
-   part of the always-on loop.
+  The webhook (`src/github_app.py`) needed no code change to be
+  "demoted" — it was already fully decoupled from `main.py`'s
+  `--create-prs` path (never imported, never invoked by it). Its role
+  stays what CLAUDE.md's original plan said: optional, for reacting to PR
+  events later (e.g. detecting when a generated PR is merged/closed), not
+  for deciding *when* to check Stripe. The local Flask/ngrok setup
+  (see README.md) is now purely dev-only tooling for testing the webhook
+  path specifically — not part of the always-on loop, which runs entirely
+  in Actions.
 
 **Before testing with real users** (separate from the above, no rush):
 this is currently a single-tenant dev sandbox — the `api-watchdog-dev`
@@ -98,7 +100,7 @@ GitHub App: `api-watchdog-dev`, installed on `SaahirD/api-watchdog`. Permissions
 
 ## Known limitations (not bugs, just not solved yet)
 
-- **Self-scan false positives:** running the tool against this repo's own source produces a couple of false-positive matches, because `stripe_monitor.py`'s own docstrings/comments quote Stripe symbol names as examples (e.g. `redirectToCheckout`). Not a pattern expected in a real customer repo; not defended against.
+- **Self-scan false positives:** running the tool against this repo's own source produces a couple of false-positive matches, because `stripe_monitor.py`'s own docstrings/comments quote Stripe symbol names as examples (e.g. `redirectToCheckout`). Not a pattern expected in a real customer repo; not defended against. Since the scheduled workflow's default `--repo .` scans this same repo, this can occasionally surface as a non-zero exit on `watch.yml` (no usable fix generated for a false-positive match) — expected, not an incident.
 - **Syntax gate ≠ semantic correctness:** `claude_fixer.py` validates that a generated fix still parses, but a syntactically valid-yet-wrong fix (e.g. duplicated code) would pass the gate. Human review remains load-bearing by design (see guiding principles below).
 - **Symbol matching is regex-based, not AST-based:** works well in practice (tightened to require underscore/dot/camelCase structure to cut noise) but can still miss or mismatch in edge cases a real parser wouldn't.
 

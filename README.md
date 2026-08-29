@@ -1,7 +1,22 @@
 # api-watchdog
 A tool that watches when an API you depend on (Stripe, Twilio, etc.) changes, finds the affected code in your repo, and opens a pull request with the fix before it breaks in production.
 
-## Local Development
+## How it runs
+
+This repo runs on a schedule via GitHub Actions (`.github/workflows/watch.yml`):
+every 12 hours it checks the Stripe changelog for breaking changes, generates
+a fix with Claude for any that affect this repo's code, and opens a PR (never
+auto-merges). No manual trigger is needed for normal operation.
+
+To force a check outside the cron schedule, go to the **Actions** tab →
+**Watch Stripe API Changes** → **Run workflow**, and optionally check
+**create_prs** to actually open PRs instead of a dry run.
+
+## Local Development (webhook testing only)
+
+The steps below are dev-only tooling for testing `src/github_app.py`'s
+webhook handling specifically. They are **not** required for the scheduled
+Stripe-watching loop, which runs entirely in GitHub Actions — see above.
 
 ### Webhook Testing with ngrok
 
