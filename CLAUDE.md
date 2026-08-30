@@ -12,24 +12,28 @@ Most tools (Dependabot, Renovate) watch package/dependency versions. Nobody watc
 
 ## Current phase
 
-**Phases 0-3 are complete and verified against live data, not mocks. Phase 4 (scheduled trigger) is implemented but not yet verified running in Actions.**
+**Phases 0-4 are complete. The full loop runs unattended end-to-end and has been verified against live data, not mocks.**
 
 - **Phase 0 (validation):** Tested Claude's ability to generate correct fixes for real Stripe API deprecations (handleCardPayment → confirmCardPayment, confirmSetupIntent → confirmCardSetup). Both passed.
 - **Phase 1 (GitHub App integration):** Flask webhook receiver (`src/github_app.py`) with HMAC-SHA256 signature verification. Verified live: a real `git push` triggered a GitHub webhook delivery through ngrok to the local Flask app, confirmed via GitHub's own delivery log (`GET /app/hook/deliveries`).
 - **Phase 2 (Stripe changelog monitoring):** `src/stripe_monitor.py` fetches and parses `docs.stripe.com/changelog`'s embedded `window.__INITIAL_STATE__` JSON (no scraping/headless browser needed), filters to breaking changes, and searches the repo for affected code usage. Verified against the live changelog (880 entries, 69 breaking in the last year).
 - **Phase 3 (fix generation + PR creation):** `src/claude_fixer.py` generates fixes with real Stripe migration guidance in the prompt, validates the result still parses (`compile()` / `node --check`) before accepting it. `src/pr_creator.py` authenticates as the GitHub App installation and opens a real PR. Verified live: opened and closed [PR #1](https://github.com/SaahirD/api-watchdog/pull/1) end-to-end using the real "Removes support for the redirectToCheckout method" changelog entry.
 
-- **Phase 4 (scheduled trigger, implemented — not yet verified live):** `.github/workflows/watch.yml` runs
+- **Phase 4 (scheduled trigger):** `.github/workflows/watch.yml` runs
   `python src/main.py --create-prs` on a cron schedule (every 12 hours),
   in GitHub Actions — no laptop required to be on. Secrets
-  (`ANTHROPIC_API_KEY`, `GITHUB_APP_ID`, `GITHUB_PRIVATE_KEY`) live in repo
+  (`ANTHROPIC_API_KEY`, `GH_APP_ID`, `GH_APP_PRIVATE_KEY`) live in repo
   Settings → Secrets → Actions, not just the local `.env`. A
   `.stripe_changes_cache.json` (see "no database yet" below) is kept warm
   across ephemeral runners via `actions/cache`, keyed per-run with a
   prefix `restore-keys` fallback so each run restores the previous run's
   cache and saves a fresh one. `workflow_dispatch` (manual trigger, with a
   `create_prs` checkbox) is available for on-demand runs without waiting
-  for the cron.
+  for the cron. Verified live: a `workflow_dispatch` run with `create_prs`
+  checked opened [PR #2](https://github.com/SaahirD/api-watchdog/pull/2)
+  end-to-end, unattended, using the real "Removes support for specifying
+  payment method types in Payment Intents and Setup Intents" changelog
+  entry (2026-08-30).
 
   The webhook (`src/github_app.py`) needed no code change to be
   "demoted" — it was already fully decoupled from `main.py`'s
@@ -93,6 +97,14 @@ GITHUB_PRIVATE_KEY=       <- must be quoted (multi-line PEM) or python-dotenv si
 GITHUB_WEBHOOK_SECRET=    <- set, enforced via HMAC-SHA256 in github_app.py
 ANTHROPIC_API_KEY=        <- set and working
 ```
+
+In GitHub Actions (repo Settings → Secrets → Actions), `GITHUB_APP_ID` and
+`GITHUB_PRIVATE_KEY` are stored as `GH_APP_ID` / `GH_APP_PRIVATE_KEY`
+instead — GitHub reserves the `GITHUB_` prefix for secret names and
+refuses to create one that starts with it. `watch.yml` maps them back to
+the `GITHUB_APP_ID`/`GITHUB_PRIVATE_KEY` env var names the code actually
+reads. `GITHUB_WEBHOOK_SECRET`/`GITHUB_CLIENT_ID` aren't needed as Actions
+secrets — only the local Flask webhook receiver uses them.
 
 GitHub App: `api-watchdog-dev`, installed on `SaahirD/api-watchdog`. Permissions: `contents:write`, `pull_requests:write`, `metadata:read`. Subscribed events: `push`, `pull_request`, `repository`.
 
