@@ -52,6 +52,16 @@ types/required-ness) rather than by parsing prose, which matters because
 back to weaker prose-extraction — the spec diff doesn't have that gap. A
 precision/coverage improvement, not a speed one.
 
+**Known follow-up, not yet built**: `oasdiff` (the diff/classification
+tool this relies on) proved unreliable on a large diff window when
+directly tested — see `CLAUDE.md`'s Known Limitations for the specifics.
+Only a real risk after an extended gap since the last successful run, not
+in normal ~12h-cadence operation. A bounded-lookback-window design (cap
+how old a checkpoint is allowed to get before diffing, instead of ever
+diffing an arbitrarily large gap) would close this properly. Worth doing
+if it's ever actually hit in practice; not worth building preemptively for
+an edge case steady-state operation doesn't produce.
+
 ## Phase 6 (proposed, not started): which API to add next
 
 Building a second *API* (not just a second detector for Stripe, which is

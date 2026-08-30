@@ -12,7 +12,23 @@ Most tools (Dependabot, Renovate) watch package/dependency versions. Nobody watc
 
 ## Current phase
 
-**Phases 0-4 are complete and verified live. Phase 5 (OpenAPI spec-diff detector) is implemented and control-flow-tested offline; not yet exercised on a real Stripe spec change in production (see Phase 5 entry below for exactly what has and hasn't been verified).**
+**Status as of 2026-08-30, for anyone (human or Claude) picking this up fresh:**
+Phases 0-4 are complete, verified live, and running unattended on a
+12-hour cron in GitHub Actions — real PRs have been opened
+([#1](https://github.com/SaahirD/api-watchdog/pull/1),
+[#2](https://github.com/SaahirD/api-watchdog/pull/2)), the repo is public
+under MIT, and `README.md` has a working install guide for a stranger.
+Phase 5 (a second, independent detection source — diffing Stripe's
+OpenAPI spec, not just its changelog) is built, its own control flow is
+verified live in Actions, and two real bugs it surfaced along the way are
+fixed — but the one thing not yet confirmed live is a real PR opened
+*from* the spec-diff detector specifically (see its entry below for
+exactly what is and isn't proven, and why). Nothing is currently broken
+or blocking; the loop runs itself. **Next**, per `ROADMAP.md`: nothing
+urgent is queued — candidates are adding a second *API* (GitHub's
+REST/GraphQL API is the top pick), or simply waiting for real usage
+before deciding what's next, per the "open source now, get trust first"
+plan below.
 
 - **Phase 0 (validation):** Tested Claude's ability to generate correct fixes for real Stripe API deprecations (handleCardPayment → confirmCardPayment, confirmSetupIntent → confirmCardSetup). Both passed.
 - **Phase 1 (GitHub App integration):** Flask webhook receiver (`src/github_app.py`) with HMAC-SHA256 signature verification. Verified live: a real `git push` triggered a GitHub webhook delivery through ngrok to the local Flask app, confirmed via GitHub's own delivery log (`GET /app/hook/deliveries`).
@@ -45,7 +61,7 @@ Most tools (Dependabot, Renovate) watch package/dependency versions. Nobody watc
   path specifically — not part of the always-on loop, which runs entirely
   in Actions.
 
-- **Phase 5 (OpenAPI spec-diff detector, verified live in Actions):** `src/stripe_spec_monitor.py`
+- **Phase 5 (OpenAPI spec-diff detector, running live in Actions; PR-creation path not yet confirmed live):** `src/stripe_spec_monitor.py`
   is a second, independent detector alongside `stripe_monitor.py`'s
   changelog scraper. It diffs `github.com/stripe/openapi`'s `spec3.sdk.json`
   against a checkpoint commit (not a Stripe dated API version — this repo's
@@ -116,6 +132,39 @@ Most tools (Dependabot, Renovate) watch package/dependency versions. Nobody watc
      "unchanged since last checkpoint", exited 0, cache saved. This
      confirms the full production pipeline (both detectors, dedup, cache
      persistence) genuinely works unattended in Actions.
+
+  **Attempted to force a full end-to-end close-out (2026-08-30)**: seeded
+  a real ~3-month-old `stripe/openapi` commit as the local checkpoint and
+  ran `main.py --create-prs` for real, specifically to exercise a genuine
+  matched spec-diff change through to PR creation. This surfaced two more
+  real bugs (both fixed, see the `619053d` commit and Known Limitations):
+  `oasdiff`'s own `--allow-external-refs` default (`true`) made it hang
+  indefinitely trying to resolve `$refs` over the network (confirmed: 4+
+  minutes of near-zero CPU, i.e. genuinely blocked, not slow) — fixed by
+  passing `--allow-external-refs=false`. Separately, matching *every* raw
+  oasdiff entry against the repo before capping doesn't scale to a large
+  historical diff (a real ~206MB oasdiff output was still being processed
+  after 7+ minutes / 1.5GB+ RSS when stopped) — fixed with a new
+  `MAX_RAW_ENTRIES_PER_RUN` cap applied before the matching loop, using
+  the same checkpoint-holdback backpressure as the existing matched-cap.
+
+  **Honest residual gap**: even with both fixes, `oasdiff`'s own runtime
+  on this same large diff proved genuinely unreliable across repeat
+  attempts — 17.7s once, a real hang another time (confirmed via
+  `Get-NetTCPConnection`: zero open connections, zero CPU — not the
+  external-refs issue recurring, something else), 90+ seconds of heavy
+  multi-core computation another time. This is specific to a *large*
+  diff window (an extended gap since the last successful run) — steady-
+  state ~12h-cadence operation has never shown this. `watch.yml`'s
+  `timeout-minutes: 20` job guard is the real backstop (a hung run fails
+  safely; the checkpoint doesn't advance either way, so nothing gets
+  corrupted, just retried next cron cycle) — not a fix for the
+  unreliability itself. A bounded-lookback-window design (cap how old a
+  checkpoint can be before diffing, rather than diffing an arbitrarily
+  large gap) would close this properly; not built — real scope beyond
+  today, and not a risk in normal operation. Because of this, the actual
+  matched-change-through-PR-creation path for the spec-diff detector
+  specifically remains unconfirmed live (see below).
 
   **Still not exercised end-to-end**: an actual PR opened by the spec-diff
   detector, or `pr_creator.py`'s stale-branch-reset fix specifically being
@@ -219,7 +268,8 @@ GitHub App: `api-watchdog-dev`, installed on `SaahirD/api-watchdog`. Permissions
 - **Spec-diff's symbols are lower-precision than the changelog's:** `stripe_spec_monitor.py`'s candidates come from oasdiff's diff text plus the undocumented `x-stripeOperations` codegen annotation, not from Stripe's own hand-curated `changed` list. Expect noisier/less complete matches than the changelog detector, same accepted tradeoff as the existing regex-based matcher's own limitation above — not something being fixed now.
 - **Spec-diff can't re-surface an unmatched change later, unlike the changelog:** `stripe_monitor.py`'s changelog detector deliberately doesn't cache unmatched changes so a symbol adopted later still gets caught (see its `process_change` docstring). `stripe_spec_monitor.py` can't do this the same way — it's checkpoint-based (diffs "since last processed commit"), not a rolling time window, so once the checkpoint advances past a diff window, an unmatched change from that window is gone from every future diff, even if the repo starts using that symbol tomorrow. Would need a separate replay buffer to fix; out of scope for Phase 5.
 - **Two detectors can still double-PR across runs:** `main.py`'s `check_for_api_changes()` dedups the changelog and spec-diff detectors' matches within a single run (by `(file, line)`), but if they independently detect the *same* real Stripe change in *different* runs, two PRs on two branches can still result — there's no cross-run reconciliation. Accepted per this project's scope discipline; revisit only if it turns out to happen often in practice.
-- **Testing `stripe_spec_monitor.py` against a real (not synthetic) spec change requires manually forcing an old checkpoint** — pass a throwaway `cache_file` to `StripeSpecDetector(cache_file=...)` with a `checkpoint_sha` seeded to an old `stripe/openapi` commit (found via its GitHub API commit history), the same way `.stripe_changes_cache.json`'s poisoning bug above should never be reproduced against the real cache file.
+- **Testing `stripe_spec_monitor.py` against a real (not synthetic) spec change requires manually forcing an old checkpoint** — pass a throwaway `cache_file` to `StripeSpecDetector(cache_file=...)` with a `checkpoint_sha` seeded to an old `stripe/openapi` commit (found via its GitHub API commit history), the same way `.stripe_changes_cache.json`'s poisoning bug above should never be reproduced against the real cache file. Be aware doing this forces a large diff window — see the next item.
+- **`oasdiff` itself is unreliable on a large diff window, even with the fixes applied:** confirmed directly (2026-08-30, forcing a ~3-month-old checkpoint to test the above) — `--allow-external-refs=false` (see `stripe_spec_monitor.py`'s `_run_oasdiff`) fixes a genuine hang from external `$ref` resolution, and `MAX_RAW_ENTRIES_PER_RUN` bounds how much *this codebase* processes after oasdiff returns, but `oasdiff`'s own runtime on the identical two ~10MB real spec files still ranged unpredictably from 17.7s to a separate genuine hang (confirmed via `Get-NetTCPConnection`: zero open connections, zero CPU) to 90+ seconds of heavy multi-core computation. `OASDIFF_TIMEOUT` is 120s, which is not a guarantee for a large window. `watch.yml`'s `timeout-minutes: 20` job guard is the real backstop — a hung run fails safely (checkpoint doesn't advance either way) rather than corrupting anything, just costs an Actions run and retries next cron cycle. Only a real risk after an extended gap (repeated failures, a long pause) — steady-state ~12h-cadence operation keeps the diff window small and has never shown this. A bounded-lookback-window design would close this properly; not built, real scope beyond what's been done so far.
 
 ## Guiding principles for this project
 

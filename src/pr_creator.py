@@ -107,8 +107,13 @@ def create_fix_pr(client: Github, owner: str, repo: str, fix: dict,
             try:
                 existing_prs = gh_repo.get_pulls(state='open', head=f"{owner}:{branch_name}", base=base_branch)
                 has_open_pr = next(iter(existing_prs), None) is not None
-            except GithubException:
-                has_open_pr = False
+            except GithubException as check_err:
+                # Fail closed: if we can't tell whether a PR is open, don't
+                # guess "no" and take the destructive path below (force-
+                # resetting the branch would blow away anyone's in-review
+                # commits if one actually is open). Skip this fix instead.
+                logger.error(f"Could not check for an open PR on {branch_name}, skipping to avoid a destructive reset: {check_err}")
+                return None
 
             if has_open_pr:
                 logger.info(f"Branch {branch_name} already exists with an open PR — reusing it")

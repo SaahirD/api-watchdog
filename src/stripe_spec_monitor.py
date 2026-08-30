@@ -177,14 +177,14 @@ def _pascal_case(schema_key: str) -> str:
     return ''.join(part.capitalize() for part in re.split(r'[_.]', schema_key) if part)
 
 
+# Deliberately not a real Stripe field name in the docstring example below
+# — an earlier version used a real one and it round-tripped straight into
+# a self-scan false-positive match against this very file (see CLAUDE.md's
+# Known Limitations: this class of false positive isn't defended against,
+# but there's no reason to manufacture new instances of it in example text
+# when a fake placeholder documents the same transformation just as
+# clearly).
 def _camel_case(token: str) -> str:
-    # Deliberately not a real Stripe field name in this docstring example —
-    # an earlier version used a real one and it round-tripped straight into
-    # a self-scan false-positive match against this very file (see
-    # CLAUDE.md's Known Limitations: this class of false positive isn't
-    # defended against, but there's no reason to manufacture new instances
-    # of it in example text when a fake placeholder documents the same
-    # transformation just as clearly).
     """'some_example_field' -> 'someExampleField'."""
     parts = token.split('_')
     if len(parts) < 2:

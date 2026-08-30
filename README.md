@@ -59,8 +59,14 @@ internally; `watch.yml` maps between the two.)
 ### 5. That's it
 
 `.github/workflows/watch.yml` runs on a 12-hour cron once it's on your
-default branch, checking the Stripe changelog for breaking changes that
-affect your code and opening a PR (never auto-merging) for anything found.
+default branch, checking Stripe for breaking changes that affect your code
+and opening a PR (never auto-merging) for anything found. Two independent
+detection sources feed into this: Stripe's public changelog
+(`docs.stripe.com/changelog`), and a structural diff of Stripe's OpenAPI
+spec (`github.com/stripe/openapi`, via [`oasdiff`](https://github.com/oasdiff/oasdiff))
+— the second catches changes the changelog's prose doesn't always name a
+clean symbol for. See `CLAUDE.md`'s Phase 5 entry for details and current
+known limitations of the spec-diff source specifically.
 
 To run it on demand instead of waiting for the cron: **Actions** tab →
 **Watch Stripe API Changes** → **Run workflow**, optionally checking
@@ -70,8 +76,9 @@ To run it on demand instead of waiting for the cron: **Actions** tab →
 writes to a seen-changes cache regardless of whether `create_prs` was
 checked, so a dry run immediately before a real run can make the real run
 think there's nothing new to act on. If you want to force a completely
-fresh check, delete the `.stripe_changes_cache.json` cache entry from your
-repo's Actions cache (Actions tab → Caches).
+fresh check, delete the `.stripe_changes_cache.json` and
+`.stripe_spec_cache.json` cache entries from your repo's Actions cache
+(Actions tab → Caches).
 
 ### Why your own GitHub App, not a shared one?
 
