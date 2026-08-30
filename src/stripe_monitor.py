@@ -88,7 +88,7 @@ def _is_specific_enough(token: str) -> bool:
     word-for-word against an arbitrary codebase is almost pure noise.
 
     Require the token to carry real identifier structure: an underscore,
-    a dot (dotted API path), or a genuine internal lowercase->uppercase
+a dot (dotted API path), or a genuine internal lowercase->uppercase
     transition (true camelCase/PascalCase compounding, e.g.
     "redirectToCheckout" or "PaymentMethodTypes"). A single capitalized
     word like "Processing" has no internal transition and is excluded —
