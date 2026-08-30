@@ -63,7 +63,11 @@ COMPARE_URL_TEMPLATE = "https://github.com/stripe/openapi/compare/{old}...{new}"
 
 REQUEST_TIMEOUT = 30      # small API calls (commit lookup)
 SPEC_FETCH_TIMEOUT = 60   # the spec file itself is ~10MB
-OASDIFF_TIMEOUT = 60      # observed ~1s against the real ~10MB spec; generous headroom
+OASDIFF_TIMEOUT = 120     # observed 17.7s for a real ~3-month diff (with
+                          # --allow-external-refs=false — see _run_oasdiff);
+                          # steady-state (~12h between runs) should be much
+                          # faster than that. Generous headroom, still well
+                          # under the job's own 20-minute timeout-minutes.
 
 # Cap on matched, code-relevant changes acted on per run. stripe/openapi is
 # tagged multiple times a day and oasdiff has ~500 rule types, so — unlike
@@ -75,6 +79,16 @@ OASDIFF_TIMEOUT = 60      # observed ~1s against the real ~10MB spec; generous h
 # When the cap is hit, the checkpoint deliberately does NOT advance (see
 # get_pending_changes) so the remainder is retried, not lost.
 MAX_SPEC_CHANGES_PER_RUN = 15
+
+# Separate, earlier cap on raw oasdiff entries, applied before the
+# normalize+match loop — see get_pending_changes for the real incident
+# that motivated this (a large historical diff produced ~206MB of raw
+# output and was still running after 7+ minutes / 1.5GB+ RSS when
+# stopped). MAX_SPEC_CHANGES_PER_RUN alone doesn't help here: it only caps
+# what's kept AFTER every raw entry has already paid for a full
+# detect_code_usage() filesystem walk. This should never bind in normal
+# ~12h-cadence operation — only after an extended gap.
+MAX_RAW_ENTRIES_PER_RUN = 300
 
 # oasdiff's own remediation-guidance-free rule ids -> a templated "what to
 # do" sentence, since (unlike the changelog) oasdiff provides no migration
@@ -290,10 +304,22 @@ def _run_oasdiff(old_spec_path: str, new_spec_path: str) -> Optional[list]:
     Returns None (not []) on failure, so the caller can tell "oasdiff ran
     and found nothing" apart from "oasdiff itself failed" and avoid
     advancing the checkpoint on the latter.
+
+    `--allow-external-refs=false` is load-bearing, not just defensive:
+    verified directly that with oasdiff's own default (true), diffing two
+    real (differing) Stripe spec versions HANGS indefinitely — 4+ minutes
+    of near-zero CPU (i.e. blocked on I/O, not slow computation) before a
+    280s test timeout killed it, almost certainly oasdiff trying to
+    resolve some $ref out over the network. Disabling it dropped the same
+    real diff to 17.7s. oasdiff's own docs frame this flag as an SSRF
+    guard against untrusted specs, which is a second good reason to keep
+    it off even though Stripe's spec is first-party — but the practical
+    reason it's here is that it was hanging every run, every time.
     """
     try:
         result = subprocess.run(
-            ['oasdiff', 'breaking', old_spec_path, new_spec_path, '-f', 'json'],
+            ['oasdiff', 'breaking', old_spec_path, new_spec_path,
+             '-f', 'json', '--allow-external-refs=false'],
             capture_output=True, text=True, timeout=OASDIFF_TIMEOUT
         )
     except Exception as e:
@@ -413,6 +439,27 @@ class StripeSpecDetector:
             logger.error("oasdiff failed — skipping this run, checkpoint NOT advanced")
             return []
 
+        # Cap raw entries BEFORE the normalize+match loop, not just matched
+        # results after it (see the cap below). Verified directly why this
+        # matters: forcing a ~3-month-old checkpoint against a real,
+        # differing Stripe spec produced a 206MB oasdiff output — likely
+        # many thousands of entries — and matching every single one (each
+        # a full detect_code_usage() filesystem walk) was still running
+        # after 7+ minutes and 1.5GB+ RSS when stopped. Steady-state
+        # (~12h between successful runs) should never come close to this;
+        # it only bites after an extended gap (repeated failures, a long
+        # pause). Same checkpoint-holdback backpressure as the matched-cap
+        # below applies here, so a capped run just picks up more next time
+        # rather than silently dropping anything.
+        raw_truncated = len(raw_entries) > MAX_RAW_ENTRIES_PER_RUN
+        if raw_truncated:
+            logger.warning(
+                f"oasdiff returned {len(raw_entries)} raw entries, exceeding the "
+                f"cap of {MAX_RAW_ENTRIES_PER_RUN} — processing only the first "
+                f"{MAX_RAW_ENTRIES_PER_RUN} this run to bound how long matching takes."
+            )
+            raw_entries = raw_entries[:MAX_RAW_ENTRIES_PER_RUN]
+
         changes = []
         for raw in raw_entries:
             change = _normalize_oasdiff_entry(raw, latest_sha, base_sha, operation_index)
@@ -443,15 +490,24 @@ class StripeSpecDetector:
         # checkpoint — so next run re-diffs the SAME window, skips the
         # now-cached subset via the `change_id in self.seen_changes` check
         # above, and naturally surfaces the next batch. This converges
-        # without ever silently dropping a matched change.
-        truncated = len(matched) > MAX_SPEC_CHANGES_PER_RUN
-        if truncated:
+        # without ever silently dropping a matched change. `raw_truncated`
+        # (above) holds the checkpoint back the same way, for the same
+        # reason — if we didn't even look at every raw entry this run, the
+        # window isn't fully processed yet either.
+        matched_truncated = len(matched) > MAX_SPEC_CHANGES_PER_RUN
+        if matched_truncated:
             logger.warning(
                 f"{len(matched)} matched spec changes this run exceeds the cap of "
                 f"{MAX_SPEC_CHANGES_PER_RUN} — keeping the first {MAX_SPEC_CHANGES_PER_RUN} "
                 f"and not advancing the checkpoint, so the rest are picked up next run."
             )
             matched = matched[:MAX_SPEC_CHANGES_PER_RUN]
+
+        # Either cap withholds the checkpoint — raw_truncated means we
+        # didn't even look at the whole diff window this run, so it isn't
+        # fully processed regardless of how few matches came out of the
+        # partial slice we did look at.
+        truncated = raw_truncated or matched_truncated
 
         for change in matched:
             self.seen_changes[change['id']] = {
