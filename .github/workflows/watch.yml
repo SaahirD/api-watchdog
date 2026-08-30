@@ -47,7 +47,7 @@ jobs:
           oasdiff --version
 
       - name: Restore Stripe changes cache
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: |
             .stripe_changes_cache.json
@@ -86,3 +86,27 @@ jobs:
           else
             python src/main.py --github-repo ${{ github.repository }}
           fi
+
+      - name: Save Stripe changes cache
+        # Split into restore (above) + save (here, explicit) rather than
+        # the combined actions/cache action, and `if: always()` so this
+        # runs regardless of whether "Run api-watchdog" succeeded or
+        # failed. Confirmed by direct observation (2026-08-30): the
+        # combined action's implicit post-save step does NOT run when a
+        # later step in the job fails — verified via the repo's actual
+        # cache list (GET /repos/.../actions/caches) showing no new entry
+        # after two failed runs. That matters here specifically because
+        # get_pending_changes() writes seen_changes as a side effect
+        # partway through main.py, independent of the script's eventual
+        # exit code (e.g. a self-scan false positive that produces "no
+        # usable fix" still exits 1) — without this, that dedup progress
+        # would be silently lost on every failing run, and a recurring
+        # false positive would refetch and reprocess forever instead of
+        # being cached-and-skipped after its first appearance.
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            .stripe_changes_cache.json
+            .stripe_spec_cache.json
+          key: stripe-changes-cache-v2-${{ github.run_id }}
