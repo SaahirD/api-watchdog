@@ -45,31 +45,39 @@ Most tools (Dependabot, Renovate) watch package/dependency versions. Nobody watc
   path specifically — not part of the always-on loop, which runs entirely
   in Actions.
 
-**Before testing with real users** (separate from the above, no rush):
-this is currently a single-tenant dev sandbox — the `api-watchdog-dev`
-GitHub App is installed only on this repo, its webhook is an ngrok tunnel
-that dies when the laptop sleeps, and its private key already leaked once
-into a session transcript (see below). Recommended before onboarding
-anyone else, even though GitHub Apps can technically be multi-tenant on a
-single registration:
-- Register a **separate, real GitHub App** for anything beyond this repo —
-  isolates a dev-key leak from ever touching a real user's install, and
-  keeps dev secrets out of a shared/production `.env`.
-- Give it **real hosting** for the webhook endpoint (Fly.io, Render,
-  Lambda, etc.) — ngrok isn't viable once uptime matters.
-- Think through **Anthropic API cost/billing** once usage scales across
-  multiple users' repos instead of one dev sandbox.
+**Distribution model (decided 2026-08-30): open source now, monetize later,
+no central server yet.** Each user registers their own GitHub App scoped to
+their own repo and runs `.github/workflows/watch.yml` there with their own
+`ANTHROPIC_API_KEY` — see README.md's install guide. This isn't a
+placeholder for a future hosted product; it's the deliberate near-term
+architecture, because a *shared* GitHub App's private key can't safely be
+handed out as a per-user Actions secret (it can mint an access token for
+*any* installation of that App, not just the holder's own — see README's
+"Why your own GitHub App?"). A real shared/hosted App becomes worth building
+only once there's a server holding that key privately — i.e. once the
+monetization phase in `ROADMAP.md` actually starts, not before.
+
+This repo's own `api-watchdog-dev` GitHub App stays what it's always been —
+this project's own dev/test installation, installed only on this repo, not
+something end users install. Its webhook is an ngrok tunnel that dies when
+the laptop sleeps, which is fine, since it's dev-only.
+
+**Credential rotation still applies regardless of the above** — see below.
 
 ## Project structure
 
 ```
 api-watchdog/
-├── README.md
+├── README.md          <- install guide (register your own App, add secrets, done)
 ├── CLAUDE.md          <- this file
+├── ROADMAP.md          <- what's next and why (OpenAPI-diff idea, monetization, later)
+├── LICENSE             <- MIT
 ├── TESTING.md          <- testing/usage notes from Phase 1
 ├── .env               <- local secrets, not committed
 ├── .gitignore
 ├── requirements.txt
+├── .github/
+│   └── workflows/watch.yml <- scheduled + manual trigger (see Phase 4 above)
 ├── fixtures/
 │   └── legacy_checkout.js  <- test fixture: real deprecated Stripe.js usage
 ├── src/
@@ -123,6 +131,7 @@ GitHub App: `api-watchdog-dev`, installed on `SaahirD/api-watchdog`. Permissions
 - Every fix should default to "hold for human review" unless confidence is high — never auto-merge (enforced today: `--create-prs` never merges, just opens the PR)
 - Prioritize a working end-to-end loop (even manually triggered) over polishing any single piece
 - This is a solo build — avoid scope creep, resist the urge to add features before the core loop works
+- Open source now, monetize later — don't build billing/plan/tier logic before there are real users to learn from; see `ROADMAP.md`. Getting real installs and trust comes first
 
 ## Commit conventions
 
