@@ -39,9 +39,15 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .stripe_changes_cache.json
-          key: stripe-changes-cache-${{ github.run_id }}
+          # v2: bumped after the v1 prefix got poisoned by a dry-run
+          # verification pass (see CLAUDE.md — get_pending_changes() writes
+          # the seen-changes cache unconditionally, even without
+          # --create-prs, so a dry run before a real run can hide a change
+          # the real run should have acted on). Bump the version suffix
+          # again if this ever needs a deliberate fresh start.
+          key: stripe-changes-cache-v2-${{ github.run_id }}
           restore-keys: |
-            stripe-changes-cache-
+            stripe-changes-cache-v2-
 
       - name: Run api-watchdog
         env:

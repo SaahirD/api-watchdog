@@ -103,6 +103,7 @@ GitHub App: `api-watchdog-dev`, installed on `SaahirD/api-watchdog`. Permissions
 - **Self-scan false positives:** running the tool against this repo's own source produces a couple of false-positive matches, because `stripe_monitor.py`'s own docstrings/comments quote Stripe symbol names as examples (e.g. `redirectToCheckout`). Not a pattern expected in a real customer repo; not defended against. Since the scheduled workflow's default `--repo .` scans this same repo, this can occasionally surface as a non-zero exit on `watch.yml` (no usable fix generated for a false-positive match) — expected, not an incident.
 - **Syntax gate ≠ semantic correctness:** `claude_fixer.py` validates that a generated fix still parses, but a syntactically valid-yet-wrong fix (e.g. duplicated code) would pass the gate. Human review remains load-bearing by design (see guiding principles below).
 - **Symbol matching is regex-based, not AST-based:** works well in practice (tightened to require underscore/dot/camelCase structure to cut noise) but can still miss or mismatch in edge cases a real parser wouldn't.
+- **A dry run is not read-only w.r.t. the seen-changes cache:** `stripe_monitor.py`'s `get_pending_changes()` calls `save_seen_changes()` unconditionally, before `main.py` ever checks `--create-prs`. So running without `--create-prs` still marks any matched change as "seen" — a dry run followed by a real `--create-prs` run against the same restored cache will find nothing pending and silently skip PR creation, even though no PR was ever opened. Bitten by this once verifying Phase 4 (2026-08-30): a `workflow_dispatch` dry run before the real `create_prs` run poisoned the Actions cache, so the "real" run found nothing to do. Fixed by bumping the cache key (`stripe-changes-cache-v2-` in `watch.yml`) to force a fresh cache, and going forward: don't chain a dry run immediately before a real run against the same cache — either test with a change ID not yet cached, or accept that a preceding dry run consumes it.
 
 ## Guiding principles for this project
 
@@ -110,3 +111,7 @@ GitHub App: `api-watchdog-dev`, installed on `SaahirD/api-watchdog`. Permissions
 - Every fix should default to "hold for human review" unless confidence is high — never auto-merge (enforced today: `--create-prs` never merges, just opens the PR)
 - Prioritize a working end-to-end loop (even manually triggered) over polishing any single piece
 - This is a solo build — avoid scope creep, resist the urge to add features before the core loop works
+
+## Commit conventions
+
+- Do **not** add a "Co-Authored-By: Claude" (or similar) trailer to commit messages in this repo.
