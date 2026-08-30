@@ -467,6 +467,21 @@ class StripeSpecDetector:
             logger.error("oasdiff failed — skipping this run, checkpoint NOT advanced")
             return []
 
+        # Drop fingerprint-less entries up front — _normalize_oasdiff_entry
+        # already refuses to build a change without one, but leaving them in
+        # raw_entries here would mean they can never be marked examined
+        # (there's no fingerprint to record), so they'd occupy the same
+        # wasted slot in every truncated retry's cap forever instead of
+        # just being discarded once (caught by code review, 2026-08-30 — a
+        # narrower version of the exact non-convergence bug this whole cap
+        # was built to fix, for the entries this can't even happen to
+        # normally: oasdiff has always included one in every real run seen
+        # so far, this is a malformed-input/future-oasdiff-regression guard).
+        no_fingerprint = sum(1 for r in raw_entries if not r.get('fingerprint'))
+        if no_fingerprint:
+            logger.warning(f"Discarding {no_fingerprint} oasdiff entr(y/ies) with no fingerprint — can't track or act on them")
+        raw_entries = [r for r in raw_entries if r.get('fingerprint')]
+
         # Cap raw entries BEFORE the normalize+match loop, not just matched
         # results after it (see the cap below). Verified directly why this
         # matters: forcing a ~3-month-old checkpoint against a real,

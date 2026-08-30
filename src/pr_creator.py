@@ -107,11 +107,18 @@ def create_fix_pr(client: Github, owner: str, repo: str, fix: dict,
             try:
                 existing_prs = gh_repo.get_pulls(state='open', head=f"{owner}:{branch_name}", base=base_branch)
                 has_open_pr = next(iter(existing_prs), None) is not None
-            except GithubException as check_err:
+            except Exception as check_err:
                 # Fail closed: if we can't tell whether a PR is open, don't
                 # guess "no" and take the destructive path below (force-
                 # resetting the branch would blow away anyone's in-review
                 # commits if one actually is open). Skip this fix instead.
+                # Catches bare Exception, not just GithubException — verified
+                # (code review, 2026-08-30) that PyGithub does NOT wrap
+                # transient network failures (connection errors, timeouts)
+                # in GithubException; a raw requests exception here would
+                # otherwise propagate uncaught out of create_prs_for_fixes'
+                # loop and abort every other already-generated fix in this
+                # run too, not just this one.
                 logger.error(f"Could not check for an open PR on {branch_name}, skipping to avoid a destructive reset: {check_err}")
                 return None
 
@@ -221,7 +228,19 @@ def create_prs_for_fixes(owner: str, repo: str, fixes: list,
 
     results = []
     for fix in fixes:
-        result = create_fix_pr(client, owner, repo, fix, base_branch=base_branch)
+        try:
+            result = create_fix_pr(client, owner, repo, fix, base_branch=base_branch)
+        except Exception as e:
+            # Isolate one fix's failure from the rest of the batch — same
+            # principle as main.py's per-detector/per-fix isolation.
+            # create_fix_pr already catches GithubException internally, but
+            # PyGithub doesn't wrap transient network failures (connection
+            # errors, timeouts) in GithubException (verified, code review
+            # 2026-08-30) — without this, one bad network blip on one fix
+            # would abort every other already-generated fix in this run too.
+            change_title = fix.get('change', {}).get('title', 'unknown change')
+            logger.error(f"Unexpected error opening PR for '{change_title}': {e}", exc_info=True)
+            continue
         if result:
             results.append(result)
 
