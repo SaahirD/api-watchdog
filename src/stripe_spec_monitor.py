@@ -278,7 +278,17 @@ def _normalize_oasdiff_entry(raw: dict, sha: str, base_sha: str, operation_index
         title = f"{title} ({verb} {path})".strip()
 
     return {
-        'id': f"openapi-diff:{sha[:12]}:{fingerprint}",
+        # Deliberately NOT keyed on `sha`/`base_sha` — verified (code review,
+        # 2026-08-30) that doing so was a real bug: `sha` is `latest_sha`,
+        # which changes on every run (stripe/openapi moves constantly), so
+        # the SAME real finding got a different id every run, silently
+        # breaking `self.seen_changes` dedup entirely — not just in the
+        # large-diff/truncation edge case, in ordinary operation. The
+        # `fingerprint` oasdiff gives each finding is already documented as
+        # stable (identifies the rule+location, not which commit pair
+        # produced it) — that alone, namespaced against the changelog
+        # detector's ids, is both sufficient and actually stable.
+        'id': f"openapi-diff:{fingerprint}",
         'title': title,
         'symbols': _symbols_for_entry(raw, operation_index),
         'breaking': True,
@@ -355,31 +365,49 @@ class StripeSpecDetector:
         self.cache_file = cache_file
         self.checkpoint_sha = None
         self.seen_changes = {}
+        # Fingerprints looked at during a run that got held back by a cap
+        # (see get_pending_changes) — NOT the same as seen_changes (which
+        # is only matched changes). Tracked so a repeatedly-truncated run
+        # examines a NEW slice of raw entries each time instead of the
+        # same first MAX_RAW_ENTRIES_PER_RUN prefix forever (verified,
+        # code review 2026-08-30: a naive positional slice doesn't
+        # converge — most raw entries won't match this repo, so the
+        # matched-count staying low doesn't mean the window is small).
+        # Cleared once the checkpoint actually advances — it's scoped to
+        # "still working through the current stuck window", not global.
+        self.examined_fingerprints = set()
         self.load_state()
 
     def load_state(self):
-        """Load {checkpoint_sha, seen_changes} from self.cache_file."""
+        """Load {checkpoint_sha, seen_changes, examined_fingerprints} from self.cache_file."""
         try:
             if os.path.exists(self.cache_file):
                 with open(self.cache_file, 'r') as f:
                     state = json.load(f)
                 self.checkpoint_sha = state.get('checkpoint_sha')
                 self.seen_changes = state.get('seen_changes', {})
+                self.examined_fingerprints = set(state.get('examined_fingerprints', []))
                 logger.info(
                     f"Loaded spec-diff checkpoint "
-                    f"{self.checkpoint_sha[:12] if self.checkpoint_sha else 'none'} "
-                    f"and {len(self.seen_changes)} cached change(s)"
+                    f"{self.checkpoint_sha[:12] if self.checkpoint_sha else 'none'}, "
+                    f"{len(self.seen_changes)} cached change(s), "
+                    f"{len(self.examined_fingerprints)} examined-but-unresolved fingerprint(s)"
                 )
         except Exception as e:
             logger.error(f"Failed to load spec-diff cache: {e}")
             self.checkpoint_sha = None
             self.seen_changes = {}
+            self.examined_fingerprints = set()
 
     def save_state(self):
-        """Persist {checkpoint_sha, seen_changes} to self.cache_file."""
+        """Persist {checkpoint_sha, seen_changes, examined_fingerprints} to self.cache_file."""
         try:
             with open(self.cache_file, 'w') as f:
-                json.dump({'checkpoint_sha': self.checkpoint_sha, 'seen_changes': self.seen_changes}, f, indent=2)
+                json.dump({
+                    'checkpoint_sha': self.checkpoint_sha,
+                    'seen_changes': self.seen_changes,
+                    'examined_fingerprints': sorted(self.examined_fingerprints),
+                }, f, indent=2)
         except Exception as e:
             logger.error(f"Failed to save spec-diff cache: {e}")
 
@@ -448,41 +476,57 @@ class StripeSpecDetector:
         # after 7+ minutes and 1.5GB+ RSS when stopped. Steady-state
         # (~12h between successful runs) should never come close to this;
         # it only bites after an extended gap (repeated failures, a long
-        # pause). Same checkpoint-holdback backpressure as the matched-cap
-        # below applies here, so a capped run just picks up more next time
-        # rather than silently dropping anything.
-        raw_truncated = len(raw_entries) > MAX_RAW_ENTRIES_PER_RUN
+        # pause).
+        #
+        # Skip already-examined fingerprints before slicing, not just
+        # already-matched ones — a naive raw_entries[:N] would re-examine
+        # the identical prefix every truncated run (most raw entries won't
+        # match this repo, so a low match count doesn't mean the window is
+        # actually small), never making progress into what's past N. Note:
+        # "examined" is only recorded once a fingerprint is fully resolved
+        # below (matched-and-kept, or confirmed no match) — NOT merely
+        # because it was in this run's slice, so an entry cut by the
+        # matched-cap further down doesn't get wrongly marked done.
+        unexamined = [r for r in raw_entries if r.get('fingerprint') not in self.examined_fingerprints]
+        raw_truncated = len(unexamined) > MAX_RAW_ENTRIES_PER_RUN
         if raw_truncated:
             logger.warning(
-                f"oasdiff returned {len(raw_entries)} raw entries, exceeding the "
-                f"cap of {MAX_RAW_ENTRIES_PER_RUN} — processing only the first "
-                f"{MAX_RAW_ENTRIES_PER_RUN} this run to bound how long matching takes."
+                f"{len(unexamined)} not-yet-examined raw entries exceed the cap of "
+                f"{MAX_RAW_ENTRIES_PER_RUN} — processing only the next {MAX_RAW_ENTRIES_PER_RUN} "
+                f"this run to bound how long matching takes; the rest are picked up next run."
             )
-            raw_entries = raw_entries[:MAX_RAW_ENTRIES_PER_RUN]
+        raw_entries = unexamined[:MAX_RAW_ENTRIES_PER_RUN]
 
         changes = []
         for raw in raw_entries:
             change = _normalize_oasdiff_entry(raw, latest_sha, base_sha, operation_index)
             if change:
-                changes.append(change)
+                changes.append((raw.get('fingerprint'), change))
 
         # Match against the repo BEFORE deciding what to cache/cap — see
         # the cap-handling note below for why order matters here.
         matched = []
-        for change in changes:
+        resolved_fingerprints = set()  # confirmed no-match this run — safe to mark examined regardless of the matched-cap below
+        for fingerprint, change in changes:
             change_id = change.get('id')
             if not change_id or change_id in self.seen_changes:
+                if fingerprint:
+                    resolved_fingerprints.add(fingerprint)
                 continue
             matches = detect_code_usage(repo_path, change)
             if not matches:
-                # Deliberately NOT cached — same reasoning as
-                # stripe_monitor.py's process_change, though see this
+                # Deliberately NOT cached in seen_changes — same reasoning
+                # as stripe_monitor.py's process_change, though see this
                 # module's docstring for why it's weaker here (checkpoint
                 # advancement still means this specific diff window won't
-                # be re-examined once we move past it).
+                # be re-examined once we move past it). Still fine to mark
+                # examined for THIS stuck window's progress — there's
+                # genuinely no match to lose.
+                if fingerprint:
+                    resolved_fingerprints.add(fingerprint)
                 continue
             change['code_matches'] = matches
-            matched.append(change)
+            matched.append((fingerprint, change))
 
         # Cap AFTER matching (keeps highest-signal matches, not an
         # arbitrary prefix of the raw diff). If we hit the cap, mark only
@@ -503,6 +547,15 @@ class StripeSpecDetector:
             )
             matched = matched[:MAX_SPEC_CHANGES_PER_RUN]
 
+        # Only mark KEPT matches examined — anything cut by the cap above
+        # must stay un-examined so it's looked at again (and this time
+        # actually cached) next run, instead of being silently lost the
+        # way a same-run "mark everything in the slice examined" would.
+        resolved_fingerprints.update(fp for fp, _ in matched if fp)
+        self.examined_fingerprints.update(resolved_fingerprints)
+
+        matched = [change for _, change in matched]
+
         # Either cap withholds the checkpoint — raw_truncated means we
         # didn't even look at the whole diff window this run, so it isn't
         # fully processed regardless of how few matches came out of the
@@ -518,6 +571,10 @@ class StripeSpecDetector:
 
         if not truncated:
             self.checkpoint_sha = latest_sha
+            # Fresh window next time this detector actually has something
+            # new to diff — the fingerprints tracked above only exist to
+            # make progress through *this* stuck window's backlog.
+            self.examined_fingerprints = set()
         self.save_state()
 
         logger.info(f"{len(matched)} spec-derived change(s) have matching code and need fixes")
