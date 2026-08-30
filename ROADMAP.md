@@ -32,25 +32,63 @@ infra we're deliberately not building yet (see "Later" below). Until then,
 No monetization work belongs in this phase — no billing integration, no
 plan/tier logic, nothing gated. Revisit once there are real installs.
 
-## Phase 5 (proposed, not started): diff Stripe's OpenAPI spec, not just the changelog
+## Phase 5 (implemented 2026-08-30): diff Stripe's OpenAPI spec, not just the changelog
 
-Today, `stripe_monitor.py` parses prose from `docs.stripe.com/changelog` —
-which means a breaking change is only detectable once someone at Stripe
-writes a changelog entry describing it in English. Stripe also publishes
-its full API surface as a versioned, machine-readable OpenAPI spec at
-[`github.com/stripe/openapi`](https://github.com/stripe/openapi), updated
-same-day as the API itself changes.
+`src/stripe_spec_monitor.py` diffs
+[`github.com/stripe/openapi`](https://github.com/stripe/openapi)'s spec
+against a checkpoint commit using [`oasdiff`](https://github.com/oasdiff/oasdiff),
+running alongside (not replacing) `stripe_monitor.py`'s changelog scraper.
+See `CLAUDE.md`'s Phase 5 entry for exactly what's been verified vs. not.
 
-Diffing spec versions directly (removed fields, removed endpoints, changed
-types/required-ness) would:
-- Catch changes structurally, not by parsing prose — more reliable, and
-  catches things a changelog entry might describe ambiguously or omit.
-- Be faster: available same-day, not whenever the changelog is written up.
-- Need no special access or partnership — the spec repo is public.
+**Correction to this section's original framing**: the "be faster, same-day"
+claim this section used to make turned out not to hold up — research found no evidence
+`stripe/openapi` updates ahead of Stripe's own changelog, and its own git
+tags are unrelated sequential build numbers, not a per-dated-API-version
+scheme, so there's no clean "diff version X against version Y" the way this
+originally assumed. What the spec-diff source actually adds: it catches
+changes structurally (removed fields, removed endpoints, changed
+types/required-ness) rather than by parsing prose, which matters because
+~22% of changelog entries don't cleanly name a symbol in `changed` and fall
+back to weaker prose-extraction — the spec diff doesn't have that gap. A
+precision/coverage improvement, not a speed one.
 
-This is a natural next detection source to add alongside (not necessarily
-replacing) the changelog — the two could cross-validate each other. Not
-started; flagged here so the idea isn't lost.
+## Phase 6 (proposed, not started): which API to add next
+
+Building a second *API* (not just a second detector for Stripe, which is
+what Phase 5 was) is a materially bigger step — new fetch/parse logic, new
+domain knowledge, a new `src/<provider>_monitor.py` following the same
+`get_pending_changes()` contract `stripe_monitor.py`/`stripe_spec_monitor.py`
+already establish. Not started, deliberately — `CLAUDE.md`'s "one API before
+expanding" principle holds until Stripe's two-detector setup has proven
+itself in production for a while.
+
+When it's time, this is the ranked research (2026-08-30) to start from —
+9 major APIs, evaluated on: does it publish a versioned/diffable spec, does
+it publish a structured changelog with breaking changes labeled, and how
+popular is it to integrate against:
+
+| Rank | API | Spec-diff fit | Changelog fit | Verdict |
+|---|---|---|---|---|
+| 1 | **GitHub REST/GraphQL** | Excellent — actively tagged, git-diffable, official | Excellent — official page splits breaking vs. additive per dated version | Best overall match to Stripe's own model |
+| 2 | **Twilio** | Excellent — `twilio-oai`, git-diffable | Excellent — `CHANGES.md` self-labels `(breaking change)` inline | Near-turnkey given explicit labels |
+| 3 | **Shopify Admin API** | Moderate — REST ok, GraphQL schema is auth-gated | Excellent — explicit "Breaking changes" sections per dated quarterly version | Best-organized changelog of the set |
+| 4 | Plaid | Strong — `plaid-openapi`, dated versions, `[BREAKING]` labels | Strong | Closest structural twin to Stripe, smaller reach |
+| 5 | OpenAI API | Strong (tagged spec releases) | Moderate — no explicit breaking marker; real risk is model-deprecation dates, a different shape of breakage | Needs custom heuristics |
+| 6 | SendGrid | Moderate — spec repo reorganized under Twilio org | Weak-moderate | Cheap add-on if Twilio built first |
+| 7 | Slack Web API | Weak — official spec repo archived/stale since 2024 | Strong — dated changelog + forward-looking "Scheduled changes" page | Changelog-only, not spec-diffing |
+| 8 | PayPal/Braintree | Weak-moderate — PayPal has a spec repo of unconfirmed cadence; Braintree has none | Weak | Weakest of the real candidates |
+| 9 | AWS (S3 representative) | Machine-readable models exist but at ~200-service scale, high noise | Weak — no per-service breaking-change feed, just a firehose "What's New" | Poor fit — breaking changes are rare by design |
+
+**Top pick: GitHub's REST/GraphQL API.** Closest structural analogue to
+Stripe — dated API versions with a defined support window, an
+actively-tagged/diffable OpenAPI spec repo, *and* an official docs page
+that already separates breaking from additive changes per version, so it's
+the least new detection-strategy work of any candidate. Also dogfooding-
+friendly: this project already depends on PyGithub/the GitHub API itself.
+
+**Runner-up: Twilio.** Its OpenAPI spec repo's `CHANGES.md` self-labels
+`(breaking change)` inline, making changelog-style detection nearly
+turnkey — a simple line-scan gets most of the value with minimal parsing.
 
 ## Later: monetization, once there's real usage to build on
 

@@ -135,6 +135,62 @@ def _extract_symbols(entry: dict) -> list:
     return deduped
 
 
+def detect_code_usage(repo_path: str, change: dict) -> list:
+    """
+    Find code in a repository that uses any of a change's candidate symbols.
+
+    Module-level (not a method) because it's fully generic — it only reads
+    change['symbols']/['id']/['title'] and walks the filesystem, with no
+    changelog-parsing dependency. Shared by both StripeChangeDetector and
+    StripeSpecDetector (src/stripe_spec_monitor.py) rather than duplicated.
+
+    Args:
+        repo_path: Path to the repository to search
+        change: Change dict — must have 'symbols'
+
+    Returns:
+        List of matches: {file, line, code, symbol, change_id, change_title}
+    """
+    matches = []
+    symbols = [s for s in change.get('symbols', []) if s]
+
+    if not symbols:
+        logger.debug(f"No symbols to search for change: {change.get('title')}")
+        return matches
+
+    # Word-boundary regex per symbol (dots need escaping; identifiers can
+    # contain them, e.g. "flow_data.type").
+    patterns = [(s, re.compile(r'\b' + re.escape(s) + r'\b')) for s in symbols]
+
+    for root, dirs, files in os.walk(repo_path):
+        dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
+
+        for file in files:
+            if not any(file.endswith(ext) for ext in SOURCE_EXTENSIONS):
+                continue
+
+            file_path = os.path.join(root, file)
+            try:
+                with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                    for line_num, line in enumerate(f, 1):
+                        for symbol, pattern in patterns:
+                            if pattern.search(line):
+                                matches.append({
+                                    'file': file_path,
+                                    'line': line_num,
+                                    'code': line.strip(),
+                                    'symbol': symbol,
+                                    'change_id': change.get('id'),
+                                    'change_title': change.get('title'),
+                                })
+            except Exception as e:
+                logger.debug(f"Error reading {file_path}: {e}")
+
+    if matches:
+        logger.info(f"Found {len(matches)} usage(s) for change: {change.get('title')}")
+    return matches
+
+
 class StripeChangeDetector:
     """Detects breaking changes in the Stripe API and finds affected code."""
 
@@ -242,54 +298,8 @@ class StripeChangeDetector:
         return changes
 
     def detect_code_usage(self, repo_path: str, change: dict) -> list:
-        """
-        Find code in a repository that uses any of a change's candidate symbols.
-
-        Args:
-            repo_path: Path to the repository to search
-            change: Change dict from check_changelog() — must have 'symbols'
-
-        Returns:
-            List of matches: {file, line, code, symbol, change_id, change_title}
-        """
-        matches = []
-        symbols = [s for s in change.get('symbols', []) if s]
-
-        if not symbols:
-            logger.debug(f"No symbols to search for change: {change.get('title')}")
-            return matches
-
-        # Word-boundary regex per symbol (dots need escaping; identifiers can
-        # contain them, e.g. "flow_data.type").
-        patterns = [(s, re.compile(r'\b' + re.escape(s) + r'\b')) for s in symbols]
-
-        for root, dirs, files in os.walk(repo_path):
-            dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
-
-            for file in files:
-                if not any(file.endswith(ext) for ext in SOURCE_EXTENSIONS):
-                    continue
-
-                file_path = os.path.join(root, file)
-                try:
-                    with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-                        for line_num, line in enumerate(f, 1):
-                            for symbol, pattern in patterns:
-                                if pattern.search(line):
-                                    matches.append({
-                                        'file': file_path,
-                                        'line': line_num,
-                                        'code': line.strip(),
-                                        'symbol': symbol,
-                                        'change_id': change.get('id'),
-                                        'change_title': change.get('title'),
-                                    })
-                except Exception as e:
-                    logger.debug(f"Error reading {file_path}: {e}")
-
-        if matches:
-            logger.info(f"Found {len(matches)} usage(s) for change: {change.get('title')}")
-        return matches
+        """Thin instance-method wrapper — see module-level detect_code_usage()."""
+        return detect_code_usage(repo_path, change)
 
     def process_change(self, change: dict, repo_path: str = '.') -> Optional[dict]:
         """

@@ -35,10 +35,23 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      - name: Install oasdiff
+        # Go binary, not a pip package — used by stripe_spec_monitor.py
+        # (Phase 5) to diff Stripe's OpenAPI spec. Pinned to an exact
+        # version rather than tracking main, so an oasdiff-side output
+        # schema change doesn't silently break _normalize_oasdiff_entry.
+        # Reconfirm this is still current at github.com/oasdiff/oasdiff/releases
+        # before bumping.
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/oasdiff/oasdiff/main/install.sh | sh -s -- -b /usr/local/bin v1.29.1
+          oasdiff --version
+
       - name: Restore Stripe changes cache
         uses: actions/cache@v4
         with:
-          path: .stripe_changes_cache.json
+          path: |
+            .stripe_changes_cache.json
+            .stripe_spec_cache.json
           # v2: bumped after the v1 prefix got poisoned by a dry-run
           # verification pass (see CLAUDE.md — get_pending_changes() writes
           # the seen-changes cache unconditionally, even without
@@ -59,6 +72,14 @@ jobs:
           # *names* differ.
           GITHUB_APP_ID: ${{ secrets.GH_APP_ID }}
           GITHUB_PRIVATE_KEY: ${{ secrets.GH_APP_PRIVATE_KEY }}
+          # Used by stripe_spec_monitor.py to authenticate its (light,
+          # ~1 req/run) calls to api.github.com/repos/stripe/openapi —
+          # raises the rate limit from 60/hr (unauthenticated, shared
+          # across the whole runner IP pool) to 1000/hr. NOT present in a
+          # step's environment automatically — GitHub Actions requires it
+          # be explicitly wired from the auto-created secrets.GITHUB_TOKEN,
+          # which is what this line does; it needs no repo Settings setup.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           if [ "${{ github.event_name }}" = "schedule" ] || [ "${{ github.event.inputs.create_prs }}" = "true" ]; then
             python src/main.py --github-repo ${{ github.repository }} --create-prs

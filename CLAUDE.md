@@ -12,7 +12,7 @@ Most tools (Dependabot, Renovate) watch package/dependency versions. Nobody watc
 
 ## Current phase
 
-**Phases 0-4 are complete. The full loop runs unattended end-to-end and has been verified against live data, not mocks.**
+**Phases 0-4 are complete and verified live. Phase 5 (OpenAPI spec-diff detector) is implemented and control-flow-tested offline; not yet exercised on a real Stripe spec change in production (see Phase 5 entry below for exactly what has and hasn't been verified).**
 
 - **Phase 0 (validation):** Tested Claude's ability to generate correct fixes for real Stripe API deprecations (handleCardPayment → confirmCardPayment, confirmSetupIntent → confirmCardSetup). Both passed.
 - **Phase 1 (GitHub App integration):** Flask webhook receiver (`src/github_app.py`) with HMAC-SHA256 signature verification. Verified live: a real `git push` triggered a GitHub webhook delivery through ngrok to the local Flask app, confirmed via GitHub's own delivery log (`GET /app/hook/deliveries`).
@@ -44,6 +44,58 @@ Most tools (Dependabot, Renovate) watch package/dependency versions. Nobody watc
   (see README.md) is now purely dev-only tooling for testing the webhook
   path specifically — not part of the always-on loop, which runs entirely
   in Actions.
+
+- **Phase 5 (OpenAPI spec-diff detector, implemented — real end-to-end
+  matching confirmed, real PR not yet opened from it):** `src/stripe_spec_monitor.py`
+  is a second, independent detector alongside `stripe_monitor.py`'s
+  changelog scraper. It diffs `github.com/stripe/openapi`'s `spec3.sdk.json`
+  against a checkpoint commit (not a Stripe dated API version — this repo's
+  own git tags are unrelated sequential build numbers, cut multiple times a
+  day) using [`oasdiff`](https://github.com/oasdiff/oasdiff), classifying
+  ~500 structural change types as breaking/warning. Symbol candidates come
+  from backtick-quoted identifiers in oasdiff's own diff text plus Stripe's
+  internal `x-stripeOperations` codegen annotations (undocumented, not a
+  stable contract — treat as heuristic). Wired into `main.py`'s
+  `check_for_api_changes()` alongside the changelog detector, with a
+  single-run dedup (changelog "claims" `(file, line)` pairs first; spec-diff
+  matches at an already-claimed line are dropped as the same real change
+  independently detected twice). `watch.yml` installs `oasdiff` (pinned
+  version) and passes it a `GITHUB_TOKEN` for the (light) GitHub API calls
+  it makes.
+
+  **This is a precision/coverage improvement over the changelog, not a
+  speed one** — no evidence `stripe/openapi` updates ahead of Stripe's own
+  changelog; its value is an independent detection path that catches
+  changes the changelog's prose doesn't cleanly name a symbol for (~22% of
+  entries, per `stripe_monitor.py`'s own comment). Correcting `ROADMAP.md`'s
+  earlier "be faster" framing to reflect this.
+
+  **What's actually verified vs. not**: `_normalize_oasdiff_entry()` and
+  `_symbols_for_entry()` were checked against a real `oasdiff v1.29.1`
+  binary run (Windows release, downloaded directly) against both a
+  synthetic before/after spec pair and Stripe's real, live `spec3.sdk.json`
+  — confirmed the actual JSON output shape rather than assuming it, and
+  confirmed `x-stripeOperations` symbol enrichment produces correct output
+  (e.g. a removed `/v1/payment_intents/{intent}/capture` endpoint correctly
+  yields `PaymentIntent.capture` as a candidate). The full
+  `StripeSpecDetector.get_pending_changes()` control flow — cold start,
+  normal matching (against `fixtures/legacy_checkout.js`, a real match),
+  unchanged-checkpoint short-circuit, and the cap/backpressure logic that
+  holds the checkpoint back when a run's matches exceed `MAX_SPEC_CHANGES_PER_RUN`
+  — was exercised offline with the network calls monkeypatched, all passing.
+  A real dry run of `main.py --repo . --verbose` also confirmed the cold-start
+  path against the live `stripe/openapi` repo (recorded a real checkpoint,
+  emitted no changes, exactly as designed). **Not yet done**: a real run
+  where the spec-diff detector's checkpoint has actually advanced and
+  produced a real matched change end-to-end through PR creation — that
+  requires either waiting for a real subsequent Stripe spec change, or
+  forcing an old checkpoint deliberately (see Known Limitations' testing
+  note below).
+
+  **Not built** (deliberately, per this project's scope discipline): no
+  cross-run reconciliation between the two detectors (documented residual
+  risk below), no AST/SDK-verified symbol resolution, no LLM
+  re-classification of oasdiff's own breaking/warning output.
 
 **Distribution model (decided 2026-08-30): open source now, monetize later,
 no central server yet.** Each user registers their own GitHub App scoped to
@@ -84,6 +136,7 @@ api-watchdog/
 │   ├── main.py             <- CLI orchestrator (check → fix → optionally --create-prs)
 │   ├── github_app.py       <- Flask webhook receiver (GitHub App events)
 │   ├── stripe_monitor.py   <- fetches Stripe changelog, detects affected code
+│   ├── stripe_spec_monitor.py <- diffs Stripe's OpenAPI spec via oasdiff (Phase 5)
 │   ├── claude_fixer.py     <- generates + validates fixes via Claude
 │   └── pr_creator.py       <- opens GitHub PRs via the App installation
 ```
@@ -114,6 +167,14 @@ the `GITHUB_APP_ID`/`GITHUB_PRIVATE_KEY` env var names the code actually
 reads. `GITHUB_WEBHOOK_SECRET`/`GITHUB_CLIENT_ID` aren't needed as Actions
 secrets — only the local Flask webhook receiver uses them.
 
+`watch.yml` also wires `GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}` into the
+run step — this is Actions' own auto-created per-run token (not something
+to add in repo Settings), used by `stripe_spec_monitor.py` to authenticate
+its light calls to `api.github.com/repos/stripe/openapi` at a higher rate
+limit. It is **not** present in a step's environment automatically; a
+workflow has to explicitly pass it via `env:`, which is why this line
+exists at all.
+
 GitHub App: `api-watchdog-dev`, installed on `SaahirD/api-watchdog`. Permissions: `contents:write`, `pull_requests:write`, `metadata:read`. Subscribed events: `push`, `pull_request`, `repository`.
 
 **Credential rotation reminder:** the ngrok authtoken, GitHub App private key, and Anthropic API key were all exposed in plaintext in a Claude Code session transcript (2026-08-26). They still work, but should be rotated when convenient — this isn't blocking anything.
@@ -124,6 +185,10 @@ GitHub App: `api-watchdog-dev`, installed on `SaahirD/api-watchdog`. Permissions
 - **Syntax gate ≠ semantic correctness:** `claude_fixer.py` validates that a generated fix still parses, but a syntactically valid-yet-wrong fix (e.g. duplicated code) would pass the gate. Human review remains load-bearing by design (see guiding principles below).
 - **Symbol matching is regex-based, not AST-based:** works well in practice (tightened to require underscore/dot/camelCase structure to cut noise) but can still miss or mismatch in edge cases a real parser wouldn't.
 - **A dry run is not read-only w.r.t. the seen-changes cache:** `stripe_monitor.py`'s `get_pending_changes()` calls `save_seen_changes()` unconditionally, before `main.py` ever checks `--create-prs`. So running without `--create-prs` still marks any matched change as "seen" — a dry run followed by a real `--create-prs` run against the same restored cache will find nothing pending and silently skip PR creation, even though no PR was ever opened. Bitten by this once verifying Phase 4 (2026-08-30): a `workflow_dispatch` dry run before the real `create_prs` run poisoned the Actions cache, so the "real" run found nothing to do. Fixed by bumping the cache key (`stripe-changes-cache-v2-` in `watch.yml`) to force a fresh cache, and going forward: don't chain a dry run immediately before a real run against the same cache — either test with a change ID not yet cached, or accept that a preceding dry run consumes it.
+- **Spec-diff's symbols are lower-precision than the changelog's:** `stripe_spec_monitor.py`'s candidates come from oasdiff's diff text plus the undocumented `x-stripeOperations` codegen annotation, not from Stripe's own hand-curated `changed` list. Expect noisier/less complete matches than the changelog detector, same accepted tradeoff as the existing regex-based matcher's own limitation above — not something being fixed now.
+- **Spec-diff can't re-surface an unmatched change later, unlike the changelog:** `stripe_monitor.py`'s changelog detector deliberately doesn't cache unmatched changes so a symbol adopted later still gets caught (see its `process_change` docstring). `stripe_spec_monitor.py` can't do this the same way — it's checkpoint-based (diffs "since last processed commit"), not a rolling time window, so once the checkpoint advances past a diff window, an unmatched change from that window is gone from every future diff, even if the repo starts using that symbol tomorrow. Would need a separate replay buffer to fix; out of scope for Phase 5.
+- **Two detectors can still double-PR across runs:** `main.py`'s `check_for_api_changes()` dedups the changelog and spec-diff detectors' matches within a single run (by `(file, line)`), but if they independently detect the *same* real Stripe change in *different* runs, two PRs on two branches can still result — there's no cross-run reconciliation. Accepted per this project's scope discipline; revisit only if it turns out to happen often in practice.
+- **Testing `stripe_spec_monitor.py` against a real (not synthetic) spec change requires manually forcing an old checkpoint** — pass a throwaway `cache_file` to `StripeSpecDetector(cache_file=...)` with a `checkpoint_sha` seeded to an old `stripe/openapi` commit (found via its GitHub API commit history), the same way `.stripe_changes_cache.json`'s poisoning bug above should never be reproduced against the real cache file.
 
 ## Guiding principles for this project
 

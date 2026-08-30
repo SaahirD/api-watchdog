@@ -16,6 +16,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 load_dotenv()
 
 from stripe_monitor import StripeChangeDetector
+from stripe_spec_monitor import StripeSpecDetector
 from claude_fixer import generate_fix_for_changes
 
 # Configure logging
@@ -28,25 +29,66 @@ logger = logging.getLogger(__name__)
 
 def check_for_api_changes(repo_path: str = '.', days_back: int = 180) -> list:
     """
-    Check for API changes and find affected code.
+    Check for API changes and find affected code, across both detection
+    sources: the changelog scraper (StripeChangeDetector) and the OpenAPI
+    spec-diff detector (StripeSpecDetector — see stripe_spec_monitor.py
+    and ROADMAP.md's Phase 5 for why there are two).
 
     Args:
         repo_path: Path to the repository to analyze
         days_back: How many days of Stripe changelog history to check
+                   (StripeSpecDetector ignores this — it has no rolling
+                   time window, only "since its own last checkpoint")
 
     Returns:
         List of changes with detected code matches
     """
     logger.info(f"Checking for Stripe API changes in {repo_path}")
 
-    detector = StripeChangeDetector()
-    pending_changes = detector.get_pending_changes(repo_path=repo_path, days_back=days_back)
+    # Each detector is independently isolated — one failing (e.g. GitHub
+    # API down, oasdiff crash) must never block the other. Note
+    # StripeChangeDetector.check_changelog() already swallows its own
+    # fetch failures internally and returns []; this try/except is a
+    # second layer for anything not already caught inside each detector.
+    changelog_changes = []
+    try:
+        changelog_changes = StripeChangeDetector().get_pending_changes(repo_path=repo_path, days_back=days_back)
+    except Exception as e:
+        logger.error(f"Changelog detector failed: {e}", exc_info=True)
+
+    spec_changes = []
+    try:
+        spec_changes = StripeSpecDetector().get_pending_changes(repo_path=repo_path, days_back=days_back)
+    except Exception as e:
+        logger.error(f"Spec-diff detector failed: {e}", exc_info=True)
+
+    # Changelog runs first (higher precision — Stripe's own hand-curated
+    # `changed` symbols) and "claims" the (file, line) pairs it matched.
+    # Spec-diff matches at an already-claimed line are the same real-world
+    # change, independently detected twice — drop them. This is a single-
+    # run, cheap dedup, not a full reconciliation system: if the two
+    # detectors fire on the same real change in *different* runs, two PRs
+    # on two branches can still result (see CLAUDE.md's Known Limitations).
+    claimed = {(m['file'], m['line']) for c in changelog_changes for m in c.get('code_matches', [])}
+    deduped_spec_changes = []
+    for change in spec_changes:
+        remaining = [m for m in change.get('code_matches', []) if (m['file'], m['line']) not in claimed]
+        if remaining:
+            change['code_matches'] = remaining
+            deduped_spec_changes.append(change)
+        else:
+            logger.info(f"Skipping spec-diff change already covered by the changelog detector: {change.get('title')}")
+
+    pending_changes = changelog_changes + deduped_spec_changes
 
     if not pending_changes:
         logger.info("No new API changes detected")
         return []
 
-    logger.info(f"Found {len(pending_changes)} changes requiring attention")
+    logger.info(
+        f"Found {len(pending_changes)} changes requiring attention "
+        f"({len(changelog_changes)} changelog, {len(deduped_spec_changes)} spec-diff)"
+    )
     return pending_changes
 
 
