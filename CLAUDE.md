@@ -45,8 +45,7 @@ Most tools (Dependabot, Renovate) watch package/dependency versions. Nobody watc
   path specifically — not part of the always-on loop, which runs entirely
   in Actions.
 
-- **Phase 5 (OpenAPI spec-diff detector, implemented — real end-to-end
-  matching confirmed, real PR not yet opened from it):** `src/stripe_spec_monitor.py`
+- **Phase 5 (OpenAPI spec-diff detector, verified live in Actions):** `src/stripe_spec_monitor.py`
   is a second, independent detector alongside `stripe_monitor.py`'s
   changelog scraper. It diffs `github.com/stripe/openapi`'s `spec3.sdk.json`
   against a checkpoint commit (not a Stripe dated API version — this repo's
@@ -85,12 +84,44 @@ Most tools (Dependabot, Renovate) watch package/dependency versions. Nobody watc
   — was exercised offline with the network calls monkeypatched, all passing.
   A real dry run of `main.py --repo . --verbose` also confirmed the cold-start
   path against the live `stripe/openapi` repo (recorded a real checkpoint,
-  emitted no changes, exactly as designed). **Not yet done**: a real run
-  where the spec-diff detector's checkpoint has actually advanced and
-  produced a real matched change end-to-end through PR creation — that
-  requires either waiting for a real subsequent Stripe spec change, or
-  forcing an old checkpoint deliberately (see Known Limitations' testing
-  note below).
+  emitted no changes, exactly as designed).
+
+  **Verified live in GitHub Actions (2026-08-30)**, via 4 real
+  `workflow_dispatch` runs while getting this working end-to-end — not a
+  clean first try, and worth recording exactly what broke and what that
+  proved:
+  1. Run 1 crashed: the changelog detector's self-scan (a known, accepted
+     limitation — see Known Limitations) matched a live Stripe changelog
+     entry against `stripe_spec_monitor.py`'s own docstring examples, and
+     `pr_creator.py`'s branch-reuse logic then crashed trying to reuse a
+     stale branch from an already-merged PR (a real, separate bug, fixed —
+     see below).
+  2. Fixed `pr_creator.py`; run 2 still failed — same self-scan false
+     positive, this time via a *different*, pre-existing docstring example
+     in `stripe_monitor.py` itself, and Claude correctly refused to
+     generate a fix for a non-real usage site (exit 1, exactly the
+     documented "no fixes could be generated" case). Checking the repo's
+     actual Actions cache list (`GET /repos/.../actions/caches`) afterward
+     showed **no new cache entry from either failed run** — disproving my
+     original assumption that the combined `actions/cache` action saves on
+     the post-step regardless of job failure. Without a fix, that same
+     false positive would have refetched and failed on *every* future run,
+     forever, since the cache holding "already seen" never persisted.
+  3. Fixed by splitting into `actions/cache/restore` (early) +
+     `actions/cache/save` (`if: always()`, at the end) — confirmed by
+     checking the caches list again after run 3 (which still failed on the
+     same false positive) that a new entry now appeared.
+  4. Run 4: clean success — `Loaded 1 cached changes`, correctly skipped
+     the now-cached false positive, spec-diff detector correctly reported
+     "unchanged since last checkpoint", exited 0, cache saved. This
+     confirms the full production pipeline (both detectors, dedup, cache
+     persistence) genuinely works unattended in Actions.
+
+  **Still not exercised end-to-end**: an actual PR opened by the spec-diff
+  detector, or `pr_creator.py`'s stale-branch-reset fix specifically being
+  hit again — neither has had a real trigger since being fixed. Will
+  happen naturally on a future real Stripe change or a recurring
+  self-scan false positive.
 
   **Not built** (deliberately, per this project's scope discipline): no
   cross-run reconciliation between the two detectors (documented residual
@@ -181,7 +212,7 @@ GitHub App: `api-watchdog-dev`, installed on `SaahirD/api-watchdog`. Permissions
 
 ## Known limitations (not bugs, just not solved yet)
 
-- **Self-scan false positives:** running the tool against this repo's own source produces a couple of false-positive matches, because `stripe_monitor.py`'s own docstrings/comments quote Stripe symbol names as examples (e.g. `redirectToCheckout`). Not a pattern expected in a real customer repo; not defended against. Since the scheduled workflow's default `--repo .` scans this same repo, this can occasionally surface as a non-zero exit on `watch.yml` (no usable fix generated for a false-positive match) — expected, not an incident.
+- **Self-scan false positives:** running the tool against this repo's own source produces a couple of false-positive matches, because `stripe_monitor.py`'s own docstrings/comments quote Stripe symbol names as examples (e.g. `redirectToCheckout`, and `_is_specific_enough`'s own docstring quotes `PaymentMethodTypes`). Not a pattern expected in a real customer repo; not defended against. Since the scheduled workflow's default `--repo .` scans this same repo, this can occasionally surface as a non-zero exit on `watch.yml` (no usable fix generated for a false-positive match) — expected, not an incident. Confirmed live, not just hypothetical: the `PaymentMethodTypes` docstring example above caused two real `watch.yml` failures on 2026-08-30 once a real Stripe changelog entry happened to use that exact symbol — see Phase 5's entry above for the full story and the (separate, real) bugs that surfaced alongside it.
 - **Syntax gate ≠ semantic correctness:** `claude_fixer.py` validates that a generated fix still parses, but a syntactically valid-yet-wrong fix (e.g. duplicated code) would pass the gate. Human review remains load-bearing by design (see guiding principles below).
 - **Symbol matching is regex-based, not AST-based:** works well in practice (tightened to require underscore/dot/camelCase structure to cut noise) but can still miss or mismatch in edge cases a real parser wouldn't.
 - **A dry run is not read-only w.r.t. the seen-changes cache:** `stripe_monitor.py`'s `get_pending_changes()` calls `save_seen_changes()` unconditionally, before `main.py` ever checks `--create-prs`. So running without `--create-prs` still marks any matched change as "seen" — a dry run followed by a real `--create-prs` run against the same restored cache will find nothing pending and silently skip PR creation, even though no PR was ever opened. Bitten by this once verifying Phase 4 (2026-08-30): a `workflow_dispatch` dry run before the real `create_prs` run poisoned the Actions cache, so the "real" run found nothing to do. Fixed by bumping the cache key (`stripe-changes-cache-v2-` in `watch.yml`) to force a fresh cache, and going forward: don't chain a dry run immediately before a real run against the same cache — either test with a change ID not yet cached, or accept that a preceding dry run consumes it.
