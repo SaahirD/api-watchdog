@@ -94,9 +94,31 @@ def create_fix_pr(client: Github, owner: str, repo: str, fix: dict,
         logger.info(f"Created branch {branch_name}")
     except GithubException as e:
         if e.status == 422:
-            # Branch already exists — most likely a re-run for a change
-            # whose PR is still open. Reuse it rather than fail.
-            logger.info(f"Branch {branch_name} already exists, reusing it")
+            # Branch already exists. Only reuse it as-is if there's still an
+            # open PR on it (an active, ongoing fix, worth appending to) —
+            # otherwise it's a stale branch left over from an
+            # already-merged/closed PR for this same change_id, re-detected
+            # later (e.g. a later run matches a different/new file for the
+            # same change). Reusing a stale branch unmodified would either
+            # 404 on files that didn't exist when it was created (see the
+            # create-vs-update handling below) or open a PR whose diff
+            # includes every commit base_branch has gained since — reset it
+            # to the current base tip instead, same as a fresh branch.
+            try:
+                existing_prs = gh_repo.get_pulls(state='open', head=f"{owner}:{branch_name}", base=base_branch)
+                has_open_pr = next(iter(existing_prs), None) is not None
+            except GithubException:
+                has_open_pr = False
+
+            if has_open_pr:
+                logger.info(f"Branch {branch_name} already exists with an open PR — reusing it")
+            else:
+                logger.info(f"Branch {branch_name} exists but has no open PR (stale) — resetting it to {base_branch}'s current tip")
+                try:
+                    gh_repo.get_git_ref(f"heads/{branch_name}").edit(sha=base.commit.sha, force=True)
+                except GithubException as reset_err:
+                    logger.error(f"Failed to reset stale branch {branch_name}: {reset_err}")
+                    return None
         else:
             logger.error(f"Failed to create branch {branch_name}: {e}")
             return None
@@ -106,17 +128,38 @@ def create_fix_pr(client: Github, owner: str, repo: str, fix: dict,
         # GitHub's Contents API wants forward-slash, repo-relative paths.
         repo_path = file_path.replace('\\', '/').lstrip('./')
         try:
-            existing = gh_repo.get_contents(repo_path, ref=branch_name)
-            gh_repo.update_file(
-                path=repo_path,
-                message=commit_message,
-                content=contents['new'],
-                sha=existing.sha,
-                branch=branch_name,
-            )
-            logger.info(f"Updated {repo_path} on {branch_name}")
+            # The file may not exist yet on this branch — either it's brand
+            # new, or (the stale-branch case above) the branch was created
+            # before this file existed on base_branch. get_contents 404s in
+            # that case; that's expected, not an error — fall back to
+            # create_file instead of update_file (which requires a sha).
+            try:
+                sha = gh_repo.get_contents(repo_path, ref=branch_name).sha
+            except GithubException as e:
+                if e.status == 404:
+                    sha = None
+                else:
+                    raise
+
+            if sha:
+                gh_repo.update_file(
+                    path=repo_path,
+                    message=commit_message,
+                    content=contents['new'],
+                    sha=sha,
+                    branch=branch_name,
+                )
+                logger.info(f"Updated {repo_path} on {branch_name}")
+            else:
+                gh_repo.create_file(
+                    path=repo_path,
+                    message=commit_message,
+                    content=contents['new'],
+                    branch=branch_name,
+                )
+                logger.info(f"Created {repo_path} on {branch_name} (didn't exist on this branch)")
         except GithubException as e:
-            logger.error(f"Failed to update {repo_path} on {branch_name}: {e}")
+            logger.error(f"Failed to push {repo_path} to {branch_name}: {e}")
             return None
 
     try:

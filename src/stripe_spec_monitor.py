@@ -164,7 +164,14 @@ def _pascal_case(schema_key: str) -> str:
 
 
 def _camel_case(token: str) -> str:
-    """'payment_method_types' -> 'paymentMethodTypes'."""
+    # Deliberately not a real Stripe field name in this docstring example —
+    # an earlier version used a real one and it round-tripped straight into
+    # a self-scan false-positive match against this very file (see
+    # CLAUDE.md's Known Limitations: this class of false positive isn't
+    # defended against, but there's no reason to manufacture new instances
+    # of it in example text when a fake placeholder documents the same
+    # transformation just as clearly).
+    """'some_example_field' -> 'someExampleField'."""
     parts = token.split('_')
     if len(parts) < 2:
         return token
@@ -172,7 +179,7 @@ def _camel_case(token: str) -> str:
 
 
 def _snake_case(token: str) -> str:
-    """'paymentMethodTypes' -> 'payment_method_types'."""
+    """'someExampleField' -> 'some_example_field'."""
     return re.sub(r'(?<!^)(?=[A-Z])', '_', token).lower()
 
 
@@ -183,7 +190,7 @@ def _symbols_for_entry(raw: dict, operation_index: dict) -> list:
 
     1. Backtick-quoted identifiers in oasdiff's own `text` field — it
        already writes these the same way Stripe's changelog prose does
-       (e.g. "removed the request property `payment_method_types`"),
+       (e.g. "removed the request property `some_example_field`"),
        reusing stripe_monitor.CODE_SPAN_RE the same way stripe_monitor's
        own _extract_symbols() does for changelog prose.
     2. The resource+method name from _build_operation_index, for findings
