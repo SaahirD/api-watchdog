@@ -90,9 +90,9 @@ def _is_specific_enough(token: str) -> bool:
     Require the token to carry real identifier structure: an underscore,
 a dot (dotted API path), or a genuine internal lowercase->uppercase
     transition (true camelCase/PascalCase compounding, e.g.
-    "redirectToCheckout" or "PaymentMethodTypes"). A single capitalized
-    word like "Processing" has no internal transition and is excluded —
-    that's deliberate, not an oversight: it's indistinguishable from
+    "redirectToCheckout" or "AllowedPaymentMethodTypes"). A single
+    capitalized word like "Processing" has no internal transition and is
+    excluded — that's deliberate, not an oversight: it's indistinguishable from
     ordinary English at this point, and the specific variant (e.g. the
     snake_case or dotted form) is already covered separately.
     """
