@@ -149,11 +149,17 @@ def _fetch_spec(sha: str) -> Optional[dict]:
 def _build_operation_index(spec: dict) -> dict:
     """
     Map (http_verb_lowercase, path) -> {'resource': schema_key, 'method_name': ...}
-    using Stripe's `x-stripeOperations` vendor extension on component
+using Stripe's `x-stripeOperations` vendor extension on component
     schemas — verified directly against a real spec3.sdk.json fetch:
     components.schemas.payment_intent.x-stripeOperations includes e.g.
     {"method_name": "capture", "method_on": "service", "operation": "post",
      "path": "/v1/payment_intents/{intent}/capture", ...}.
+
+    Note: this index only maps operations; it does not enumerate payment
+    method type values. Enum members such as `payment_intent.
+    excluded_payment_method_types[]` (which recently gained `paypay`,
+    alongside existing values) are intentionally not mirrored here, so
+    newly added Stripe payment method types flow through untouched.
 
     This is Stripe's own internal codegen convention (confirmed present,
     not officially documented as a stable contract) — treat symbol
@@ -171,11 +177,17 @@ def _build_operation_index(spec: dict) -> dict:
                 index[(verb, path)] = {'resource': resource_key, 'method_name': method_name}
     return index
 
-
 def _pascal_case(schema_key: str) -> str:
     """'payment_intent' -> 'PaymentIntent' (Stripe's typical resource class naming)."""
     return ''.join(part.capitalize() for part in re.split(r'[_.]', schema_key) if part)
 
+# Note: Stripe additively extends response enums (e.g. the new `paypay` value in
+# `payment_intent.excluded_payment_method_types[]`, reachable from the
+# POST /v1/checkout/sessions/{session}/expire 200 response via the shared
+# `payment_intent` schema). This helper only maps schema keys to class names and
+# never enumerates enum members, so unknown/new values pass through unchanged —
+# no allow-list to update here. Downstream consumers must treat these enums as
+# open sets rather than exhaustive matches.
 
 # Deliberately not a real Stripe field name in the docstring example below
 # — an earlier version used a real one and it round-tripped straight into
