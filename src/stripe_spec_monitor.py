@@ -149,11 +149,17 @@ def _fetch_spec(sha: str) -> Optional[dict]:
 def _build_operation_index(spec: dict) -> dict:
     """
     Map (http_verb_lowercase, path) -> {'resource': schema_key, 'method_name': ...}
-    using Stripe's `x-stripeOperations` vendor extension on component
+using Stripe's `x-stripeOperations` vendor extension on component
     schemas — verified directly against a real spec3.sdk.json fetch:
     components.schemas.payment_intent.x-stripeOperations includes e.g.
     {"method_name": "capture", "method_on": "service", "operation": "post",
      "path": "/v1/payment_intents/{intent}/capture", ...}.
+
+    Note: this index only maps operations; it does not enumerate payment
+    method type values. Enum members under `payment_intent` (e.g.
+    `excluded_payment_method_types`, which recently gained `paypay`) are
+    read straight from the fetched spec, so new values such as `paypay`
+    flow through without changes here.
 
     This is Stripe's own internal codegen convention (confirmed present,
     not officially documented as a stable contract) — treat symbol
@@ -171,11 +177,30 @@ def _build_operation_index(spec: dict) -> dict:
                 index[(verb, path)] = {'resource': resource_key, 'method_name': method_name}
     return index
 
-
 def _pascal_case(schema_key: str) -> str:
     """'payment_intent' -> 'PaymentIntent' (Stripe's typical resource class naming)."""
     return ''.join(part.capitalize() for part in re.split(r'[_.]', schema_key) if part)
 
+# Note: the Stripe OpenAPI spec added a new `paypay` enum value to the
+# `payment_intent.excluded_payment_method_types[]` response property (and to the
+# same shared `payment_intent` schema wherever it is nested, e.g. under
+# `customer.invoice_settings.default_payment_method.card.generated_from.setup_attempt.setup_error.payment_intent`).
+# This module only derives class names from schema keys, so it is unaffected by
+# enum growth — but downstream consumers must treat these enums as open sets.
+# Keep this list in sync with the spec and never branch exhaustively on it.
+PAYMENT_INTENT_EXCLUDED_PAYMENT_METHOD_TYPES_KNOWN_VALUES = frozenset({
+    'paypay',
+})
+
+
+def is_known_excluded_payment_method_type(value: str) -> bool:
+    """Return True for enum values this build of the monitor already knows about.
+
+    Unknown values are expected: Stripe adds enum members (most recently `paypay`)
+    without a major API version bump, so callers should log-and-pass rather than
+    raise when this returns False.
+    """
+    return value in PAYMENT_INTENT_EXCLUDED_PAYMENT_METHOD_TYPES_KNOWN_VALUES
 
 # Deliberately not a real Stripe field name in the docstring example below
 # — an earlier version used a real one and it round-tripped straight into
