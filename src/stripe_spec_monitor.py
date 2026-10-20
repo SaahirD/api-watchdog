@@ -149,11 +149,19 @@ def _fetch_spec(sha: str) -> Optional[dict]:
 def _build_operation_index(spec: dict) -> dict:
     """
     Map (http_verb_lowercase, path) -> {'resource': schema_key, 'method_name': ...}
-    using Stripe's `x-stripeOperations` vendor extension on component
+using Stripe's `x-stripeOperations` vendor extension on component
     schemas — verified directly against a real spec3.sdk.json fetch:
     components.schemas.payment_intent.x-stripeOperations includes e.g.
     {"method_name": "capture", "method_on": "service", "operation": "post",
      "path": "/v1/payment_intents/{intent}/capture", ...}.
+
+    Note: this index only maps operations; it does not enumerate or
+    validate response enum values. Stripe may add new enum members to
+    shared schemas at any time (e.g. the `off_session` value added to
+    `payment_intent.payment_method_options.blik.setup_future_usage`,
+    alongside the existing `none` value), so downstream consumers must
+    treat such enums as open sets and tolerate unknown members rather
+    than exhaustively matching on them.
 
     This is Stripe's own internal codegen convention (confirmed present,
     not officially documented as a stable contract) — treat symbol
@@ -171,11 +179,15 @@ def _build_operation_index(spec: dict) -> dict:
                 index[(verb, path)] = {'resource': resource_key, 'method_name': method_name}
     return index
 
-
 def _pascal_case(schema_key: str) -> str:
     """'payment_intent' -> 'PaymentIntent' (Stripe's typical resource class naming)."""
     return ''.join(part.capitalize() for part in re.split(r'[_.]', schema_key) if part)
 
+# Spec note (payment_intent shared schema): Stripe added the `off_session` enum
+# value to payment_method_options.blik.setup_future_usage. This helper only maps
+# schema keys to class names, so no behavioural change is required here; any
+# code that switches on blik setup_future_usage values must tolerate
+# `off_session` in addition to `none`/`on_session`.
 
 # Deliberately not a real Stripe field name in the docstring example below
 # — an earlier version used a real one and it round-tripped straight into
