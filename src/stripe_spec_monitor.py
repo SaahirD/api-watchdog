@@ -149,11 +149,19 @@ def _fetch_spec(sha: str) -> Optional[dict]:
 def _build_operation_index(spec: dict) -> dict:
     """
     Map (http_verb_lowercase, path) -> {'resource': schema_key, 'method_name': ...}
-    using Stripe's `x-stripeOperations` vendor extension on component
+using Stripe's `x-stripeOperations` vendor extension on component
     schemas — verified directly against a real spec3.sdk.json fetch:
     components.schemas.payment_intent.x-stripeOperations includes e.g.
     {"method_name": "capture", "method_on": "service", "operation": "post",
      "path": "/v1/payment_intents/{intent}/capture", ...}.
+
+    Note: upstream spec changes to the `payment_intent` schema's response
+    *fields* (e.g. the additive `off_session` value now allowed on
+    `payment_method_options.blik.setup_future_usage`, alongside `none`)
+    are enum-level only and do not alter `x-stripeOperations`, so this
+    index is unaffected. Consumers reading that field must treat it as an
+    open set and tolerate unknown/new values rather than exhaustively
+    matching on the previously known ones.
 
     This is Stripe's own internal codegen convention (confirmed present,
     not officially documented as a stable contract) — treat symbol
@@ -171,11 +179,17 @@ def _build_operation_index(spec: dict) -> dict:
                 index[(verb, path)] = {'resource': resource_key, 'method_name': method_name}
     return index
 
-
 def _pascal_case(schema_key: str) -> str:
-    """'payment_intent' -> 'PaymentIntent' (Stripe's typical resource class naming)."""
-    return ''.join(part.capitalize() for part in re.split(r'[_.]', schema_key) if part)
+    """'payment_intent' -> 'PaymentIntent' (Stripe's typical resource class naming).
 
+    Note: purely a string transform over schema keys; it does not enumerate or
+    validate any response enum values, so additive spec changes such as the new
+    `off_session` value on `payment_intent.payment_method_options.blik.
+    setup_future_usage` require no change here. Any code that *branches* on
+    `setup_future_usage` must treat unknown/new values (e.g. `off_session`)
+    as valid rather than raising.
+    """
+    return ''.join(part.capitalize() for part in re.split(r'[_.]', schema_key) if part)
 
 # Deliberately not a real Stripe field name in the docstring example below
 # — an earlier version used a real one and it round-tripped straight into
