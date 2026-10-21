@@ -149,11 +149,19 @@ def _fetch_spec(sha: str) -> Optional[dict]:
 def _build_operation_index(spec: dict) -> dict:
     """
     Map (http_verb_lowercase, path) -> {'resource': schema_key, 'method_name': ...}
-    using Stripe's `x-stripeOperations` vendor extension on component
+using Stripe's `x-stripeOperations` vendor extension on component
     schemas — verified directly against a real spec3.sdk.json fetch:
     components.schemas.payment_intent.x-stripeOperations includes e.g.
     {"method_name": "capture", "method_on": "service", "operation": "post",
      "path": "/v1/payment_intents/{intent}/capture", ...}.
+
+    Note: the `payment_intent` schema is a shared/reused component (it is
+    referenced from many nested response paths, e.g. the Checkout Session
+    graph), so enum-only spec changes to it — such as the addition of the
+    `sequra` value to `payment_intent.excluded_payment_method_types[]` —
+    do not affect this operation index. Enum values are treated as an
+    open set here: unknown payment method type strings must be passed
+    through verbatim rather than validated against a fixed list.
 
     This is Stripe's own internal codegen convention (confirmed present,
     not officially documented as a stable contract) — treat symbol
@@ -171,11 +179,16 @@ def _build_operation_index(spec: dict) -> dict:
                 index[(verb, path)] = {'resource': resource_key, 'method_name': method_name}
     return index
 
-
 def _pascal_case(schema_key: str) -> str:
-    """'payment_intent' -> 'PaymentIntent' (Stripe's typical resource class naming)."""
-    return ''.join(part.capitalize() for part in re.split(r'[_.]', schema_key) if part)
+    """'payment_intent' -> 'PaymentIntent' (Stripe's typical resource class naming).
 
+    Purely lexical: it maps a schema/enum key to a class-style name and never
+    validates the key against a fixed allow-list. That matters because Stripe
+    grows enums additively — e.g. the `sequra` value recently added to
+    `payment_intent.excluded_payment_method_types` — so new values must flow
+    through unchanged rather than raising or being dropped.
+    """
+    return ''.join(part.capitalize() for part in re.split(r'[_.]', schema_key) if part)
 
 # Deliberately not a real Stripe field name in the docstring example below
 # — an earlier version used a real one and it round-tripped straight into
