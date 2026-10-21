@@ -149,11 +149,21 @@ def _fetch_spec(sha: str) -> Optional[dict]:
 def _build_operation_index(spec: dict) -> dict:
     """
     Map (http_verb_lowercase, path) -> {'resource': schema_key, 'method_name': ...}
-    using Stripe's `x-stripeOperations` vendor extension on component
+using Stripe's `x-stripeOperations` vendor extension on component
     schemas — verified directly against a real spec3.sdk.json fetch:
     components.schemas.payment_intent.x-stripeOperations includes e.g.
     {"method_name": "capture", "method_on": "service", "operation": "post",
      "path": "/v1/payment_intents/{intent}/capture", ...}.
+
+    Note: this index keys only off (verb, path) pairs, so response-schema
+    enum additions on the shared `payment_intent` schema — such as the new
+    `off_session` value for
+    payment_method_options.blik.setup_future_usage (previously only
+    `none`), which also surfaces via every nested reference to
+    `payment_intent` (checkout_session, setup_attempt.setup_error, etc.) —
+    do not change the operation mapping. Downstream consumers that
+    switch/validate on blik `setup_future_usage` values must treat
+    `off_session` as a known value rather than an unexpected one.
 
     This is Stripe's own internal codegen convention (confirmed present,
     not officially documented as a stable contract) — treat symbol
@@ -171,11 +181,16 @@ def _build_operation_index(spec: dict) -> dict:
                 index[(verb, path)] = {'resource': resource_key, 'method_name': method_name}
     return index
 
-
 def _pascal_case(schema_key: str) -> str:
-    """'payment_intent' -> 'PaymentIntent' (Stripe's typical resource class naming)."""
-    return ''.join(part.capitalize() for part in re.split(r'[_.]', schema_key) if part)
+    """'payment_intent' -> 'PaymentIntent' (Stripe's typical resource class naming).
 
+    Note: the upstream spec change that added the `off_session` enum value to
+    `payment_intent.payment_method_options.blik.setup_future_usage` is purely
+    additive to a response enum. It introduces no new schema keys, so this
+    name-mapping helper needs no behavioral change; enum values are never fed
+    through here (only schema/resource keys are).
+    """
+    return ''.join(part.capitalize() for part in re.split(r'[_.]', schema_key) if part)
 
 # Deliberately not a real Stripe field name in the docstring example below
 # — an earlier version used a real one and it round-tripped straight into
