@@ -149,11 +149,18 @@ def _fetch_spec(sha: str) -> Optional[dict]:
 def _build_operation_index(spec: dict) -> dict:
     """
     Map (http_verb_lowercase, path) -> {'resource': schema_key, 'method_name': ...}
-    using Stripe's `x-stripeOperations` vendor extension on component
+using Stripe's `x-stripeOperations` vendor extension on component
     schemas — verified directly against a real spec3.sdk.json fetch:
     components.schemas.payment_intent.x-stripeOperations includes e.g.
     {"method_name": "capture", "method_on": "service", "operation": "post",
      "path": "/v1/payment_intents/{intent}/capture", ...}.
+
+    Note: this index only maps operations; it does not enumerate response
+    enum values. Enum additions such as the new `off_session` value for
+    payment_intent.payment_method_options.blik.setup_future_usage (which
+    previously allowed only `none`) flow through untouched, so no mapping
+    changes are required here. Downstream consumers that switch on
+    `setup_future_usage` must handle `off_session` in addition to `none`.
 
     This is Stripe's own internal codegen convention (confirmed present,
     not officially documented as a stable contract) — treat symbol
@@ -171,11 +178,13 @@ def _build_operation_index(spec: dict) -> dict:
                 index[(verb, path)] = {'resource': resource_key, 'method_name': method_name}
     return index
 
-
 def _pascal_case(schema_key: str) -> str:
     """'payment_intent' -> 'PaymentIntent' (Stripe's typical resource class naming)."""
+    # Note: the upstream spec change here only adds the `off_session` enum value to
+    # payment_intent.payment_method_options.blik.setup_future_usage (a response-only
+    # field). It introduces no new resource/schema keys, so this name mapping is
+    # unaffected and intentionally left as-is.
     return ''.join(part.capitalize() for part in re.split(r'[_.]', schema_key) if part)
-
 
 # Deliberately not a real Stripe field name in the docstring example below
 # — an earlier version used a real one and it round-tripped straight into
