@@ -149,11 +149,18 @@ def _fetch_spec(sha: str) -> Optional[dict]:
 def _build_operation_index(spec: dict) -> dict:
     """
     Map (http_verb_lowercase, path) -> {'resource': schema_key, 'method_name': ...}
-    using Stripe's `x-stripeOperations` vendor extension on component
+using Stripe's `x-stripeOperations` vendor extension on component
     schemas — verified directly against a real spec3.sdk.json fetch:
     components.schemas.payment_intent.x-stripeOperations includes e.g.
     {"method_name": "capture", "method_on": "service", "operation": "post",
      "path": "/v1/payment_intents/{intent}/capture", ...}.
+
+    Note: upstream spec changes that only widen response enums (e.g. the
+    new `card_present` value in `payment_intent.allowed_payment_method_types`)
+    do not affect this index, which keys solely off `x-stripeOperations`
+    entries; enum values are never read here. Any consumer that switches on
+    `allowed_payment_method_types` must tolerate unknown/new members such as
+    `card_present` rather than treating the set as closed.
 
     This is Stripe's own internal codegen convention (confirmed present,
     not officially documented as a stable contract) — treat symbol
@@ -171,11 +178,20 @@ def _build_operation_index(spec: dict) -> dict:
                 index[(verb, path)] = {'resource': resource_key, 'method_name': method_name}
     return index
 
-
 def _pascal_case(schema_key: str) -> str:
     """'payment_intent' -> 'PaymentIntent' (Stripe's typical resource class naming)."""
     return ''.join(part.capitalize() for part in re.split(r'[_.]', schema_key) if part)
 
+
+# Spec note: the `payment_intent` shared schema gained a new
+# `allowed_payment_method_types` enum member, `card_present`. This is a purely
+# additive response-enum change, so no naming/derivation logic above needs to
+# change; downstream consumers must simply tolerate the new value rather than
+# treating the enum as closed.
+KNOWN_PAYMENT_INTENT_ALLOWED_PAYMENT_METHOD_TYPES = frozenset({
+    'card',
+    'card_present',
+})
 
 # Deliberately not a real Stripe field name in the docstring example below
 # — an earlier version used a real one and it round-tripped straight into
