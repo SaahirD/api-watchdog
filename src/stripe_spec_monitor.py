@@ -149,11 +149,18 @@ def _fetch_spec(sha: str) -> Optional[dict]:
 def _build_operation_index(spec: dict) -> dict:
     """
     Map (http_verb_lowercase, path) -> {'resource': schema_key, 'method_name': ...}
-    using Stripe's `x-stripeOperations` vendor extension on component
+using Stripe's `x-stripeOperations` vendor extension on component
     schemas — verified directly against a real spec3.sdk.json fetch:
     components.schemas.payment_intent.x-stripeOperations includes e.g.
     {"method_name": "capture", "method_on": "service", "operation": "post",
      "path": "/v1/payment_intents/{intent}/capture", ...}.
+
+    Note: the `payment_intent` schema is a shared schema reused across
+    many responses (e.g. POST /v1/financial_connections/accounts/{account}/disconnect),
+    and its enum members evolve over time — `excluded_payment_method_types`
+    recently gained the `paypay` value. Only the operation index is derived
+    here, so unknown/new enum values must be tolerated rather than validated
+    against a fixed allow-list.
 
     This is Stripe's own internal codegen convention (confirmed present,
     not officially documented as a stable contract) — treat symbol
@@ -171,11 +178,12 @@ def _build_operation_index(spec: dict) -> dict:
                 index[(verb, path)] = {'resource': resource_key, 'method_name': method_name}
     return index
 
-
 def _pascal_case(schema_key: str) -> str:
     """'payment_intent' -> 'PaymentIntent' (Stripe's typical resource class naming)."""
+    # Note: the upstream spec change (new `paypay` value in the PaymentIntent
+    # `excluded_payment_method_types` enum) is purely additive to a response
+    # enum and does not affect this purely syntactic name transformation.
     return ''.join(part.capitalize() for part in re.split(r'[_.]', schema_key) if part)
-
 
 # Deliberately not a real Stripe field name in the docstring example below
 # — an earlier version used a real one and it round-tripped straight into
