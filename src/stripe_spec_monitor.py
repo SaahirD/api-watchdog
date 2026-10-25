@@ -149,11 +149,16 @@ def _fetch_spec(sha: str) -> Optional[dict]:
 def _build_operation_index(spec: dict) -> dict:
     """
     Map (http_verb_lowercase, path) -> {'resource': schema_key, 'method_name': ...}
-    using Stripe's `x-stripeOperations` vendor extension on component
+using Stripe's `x-stripeOperations` vendor extension on component
     schemas — verified directly against a real spec3.sdk.json fetch:
     components.schemas.payment_intent.x-stripeOperations includes e.g.
     {"method_name": "capture", "method_on": "service", "operation": "post",
      "path": "/v1/payment_intents/{intent}/capture", ...}.
+
+    Note: the `payment_intent` schema is shared and evolves — e.g. its
+    `allowed_payment_method_types` enum gained a `card_present` value — so
+    treat any enum values read off this schema as open-ended and never
+    assume an exhaustive set.
 
     This is Stripe's own internal codegen convention (confirmed present,
     not officially documented as a stable contract) — treat symbol
@@ -171,11 +176,26 @@ def _build_operation_index(spec: dict) -> dict:
                 index[(verb, path)] = {'resource': resource_key, 'method_name': method_name}
     return index
 
-
 def _pascal_case(schema_key: str) -> str:
     """'payment_intent' -> 'PaymentIntent' (Stripe's typical resource class naming)."""
     return ''.join(part.capitalize() for part in re.split(r'[_.]', schema_key) if part)
 
+
+# Stripe spec update: the shared `payment_intent` schema gained a new
+# `card_present` value in `allowed_payment_method_types[]` (surfaced, among
+# other places, via POST /v1/financial_connections/accounts/{account}/unsubscribe).
+# Enum growth is additive, so treat these value sets as open: never assume the
+# list below is exhaustive and never raise/branch exhaustively on an unknown
+# member — fall through to a safe default instead.
+PAYMENT_INTENT_ALLOWED_PAYMENT_METHOD_TYPES = frozenset({
+    'card',
+    'card_present',
+})
+
+
+def is_known_allowed_payment_method_type(value: str) -> bool:
+    """Known-value check only; unknown values are valid and must be tolerated."""
+    return value in PAYMENT_INTENT_ALLOWED_PAYMENT_METHOD_TYPES
 
 # Deliberately not a real Stripe field name in the docstring example below
 # — an earlier version used a real one and it round-tripped straight into
