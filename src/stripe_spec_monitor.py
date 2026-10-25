@@ -149,11 +149,18 @@ def _fetch_spec(sha: str) -> Optional[dict]:
 def _build_operation_index(spec: dict) -> dict:
     """
     Map (http_verb_lowercase, path) -> {'resource': schema_key, 'method_name': ...}
-    using Stripe's `x-stripeOperations` vendor extension on component
+using Stripe's `x-stripeOperations` vendor extension on component
     schemas — verified directly against a real spec3.sdk.json fetch:
     components.schemas.payment_intent.x-stripeOperations includes e.g.
     {"method_name": "capture", "method_on": "service", "operation": "post",
      "path": "/v1/payment_intents/{intent}/capture", ...}.
+
+    Note: only the operation index (verb/path/method_name) is derived here;
+    enum members of the shared `payment_intent` schema are intentionally not
+    enumerated or validated. Stripe adds enum values additively — e.g.
+    `card_present` was added to `payment_intent.allowed_payment_method_types`
+    items — so any consumer of these values must treat unknown members as
+    forward-compatible pass-through rather than an error.
 
     This is Stripe's own internal codegen convention (confirmed present,
     not officially documented as a stable contract) — treat symbol
@@ -171,11 +178,16 @@ def _build_operation_index(spec: dict) -> dict:
                 index[(verb, path)] = {'resource': resource_key, 'method_name': method_name}
     return index
 
-
 def _pascal_case(schema_key: str) -> str:
-    """'payment_intent' -> 'PaymentIntent' (Stripe's typical resource class naming)."""
-    return ''.join(part.capitalize() for part in re.split(r'[_.]', schema_key) if part)
+    """'payment_intent' -> 'PaymentIntent' (Stripe's typical resource class naming).
 
+    Purely lexical: maps a spec schema key to its class name. Additive spec
+    changes such as the new `card_present` value in the `payment_intent`
+    `allowed_payment_method_types` enum do not affect this mapping, so no
+    enum-specific handling belongs here — consumers must treat that enum as
+    open-ended and tolerate unknown/new members.
+    """
+    return ''.join(part.capitalize() for part in re.split(r'[_.]', schema_key) if part)
 
 # Deliberately not a real Stripe field name in the docstring example below
 # — an earlier version used a real one and it round-tripped straight into
