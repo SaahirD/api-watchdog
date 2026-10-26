@@ -149,11 +149,18 @@ def _fetch_spec(sha: str) -> Optional[dict]:
 def _build_operation_index(spec: dict) -> dict:
     """
     Map (http_verb_lowercase, path) -> {'resource': schema_key, 'method_name': ...}
-    using Stripe's `x-stripeOperations` vendor extension on component
+using Stripe's `x-stripeOperations` vendor extension on component
     schemas — verified directly against a real spec3.sdk.json fetch:
     components.schemas.payment_intent.x-stripeOperations includes e.g.
     {"method_name": "capture", "method_on": "service", "operation": "post",
      "path": "/v1/payment_intents/{intent}/capture", ...}.
+
+    Note: this index keys off operations only; it is unaffected by
+    additive enum changes inside the `payment_intent` schema itself
+    (e.g. the new `paypay` value in
+    `payment_intent.excluded_payment_method_types[]`). Consumers that
+    reflect over payment method type enums should treat that list as
+    open-ended and tolerate unknown values such as `paypay`.
 
     This is Stripe's own internal codegen convention (confirmed present,
     not officially documented as a stable contract) — treat symbol
@@ -171,11 +178,19 @@ def _build_operation_index(spec: dict) -> dict:
                 index[(verb, path)] = {'resource': resource_key, 'method_name': method_name}
     return index
 
-
 def _pascal_case(schema_key: str) -> str:
     """'payment_intent' -> 'PaymentIntent' (Stripe's typical resource class naming)."""
     return ''.join(part.capitalize() for part in re.split(r'[_.]', schema_key) if part)
 
+
+# NOTE (Stripe spec update): the `payment_intent` schema gained a new
+# `paypay` value in `excluded_payment_method_types[]` (and the other
+# payment-method-type enums it is shared with). Enum members are handled
+# generically here — schema keys and enum values are normalized on the fly
+# rather than matched against a hardcoded allow-list — so additive values
+# such as `paypay` flow through without code changes. Do not introduce a
+# closed set of payment method types below; Stripe adds new ones regularly
+# and an exhaustive list would break on the next spec release.
 
 # Deliberately not a real Stripe field name in the docstring example below
 # — an earlier version used a real one and it round-tripped straight into
