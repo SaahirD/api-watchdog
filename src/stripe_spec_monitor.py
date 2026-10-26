@@ -149,11 +149,17 @@ def _fetch_spec(sha: str) -> Optional[dict]:
 def _build_operation_index(spec: dict) -> dict:
     """
     Map (http_verb_lowercase, path) -> {'resource': schema_key, 'method_name': ...}
-    using Stripe's `x-stripeOperations` vendor extension on component
+using Stripe's `x-stripeOperations` vendor extension on component
     schemas — verified directly against a real spec3.sdk.json fetch:
     components.schemas.payment_intent.x-stripeOperations includes e.g.
     {"method_name": "capture", "method_on": "service", "operation": "post",
      "path": "/v1/payment_intents/{intent}/capture", ...}.
+
+    Note: only the operation metadata above is read here. Enum members of
+    the `payment_intent` schema (e.g. `excluded_payment_method_types`, which
+    recently gained `sequra`) are treated as open/additive and are never
+    enumerated or validated against a fixed list by this index, so new
+    values ship without requiring a change here.
 
     This is Stripe's own internal codegen convention (confirmed present,
     not officially documented as a stable contract) — treat symbol
@@ -171,11 +177,16 @@ def _build_operation_index(spec: dict) -> dict:
                 index[(verb, path)] = {'resource': resource_key, 'method_name': method_name}
     return index
 
-
 def _pascal_case(schema_key: str) -> str:
-    """'payment_intent' -> 'PaymentIntent' (Stripe's typical resource class naming)."""
-    return ''.join(part.capitalize() for part in re.split(r'[_.]', schema_key) if part)
+    """'payment_intent' -> 'PaymentIntent' (Stripe's typical resource class naming).
 
+    Note: the Stripe spec change that added the `sequra` value to
+    `payment_intent.excluded_payment_method_types[]` is a purely additive
+    enum change on a response field. This helper only maps schema keys to
+    class names, so no behavioral change is required here — but callers
+    must not treat that enum as a closed set (see `_KNOWN_*` guards below).
+    """
+    return ''.join(part.capitalize() for part in re.split(r'[_.]', schema_key) if part)
 
 # Deliberately not a real Stripe field name in the docstring example below
 # — an earlier version used a real one and it round-tripped straight into
