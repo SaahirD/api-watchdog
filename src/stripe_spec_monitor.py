@@ -149,11 +149,33 @@ def _fetch_spec(sha: str) -> Optional[dict]:
 def _build_operation_index(spec: dict) -> dict:
     """
     Map (http_verb_lowercase, path) -> {'resource': schema_key, 'method_name': ...}
-    using Stripe's `x-stripeOperations` vendor extension on component
+using Stripe's `x-stripeOperations` vendor extension on component
     schemas — verified directly against a real spec3.sdk.json fetch:
     components.schemas.payment_intent.x-stripeOperations includes e.g.
     {"method_name": "capture", "method_on": "service", "operation": "post",
      "path": "/v1/payment_intents/{intent}/capture", ...}.
+
+    Note: this index only maps operations; it does not enumerate enum
+    values. Enum additions to the shared `payment_intent` schema (such as
+    the new `paypay` member of
+    `payment_intent.excluded_payment_method_types[]`, surfaced via the
+    200 response of POST /v1/checkout/sessions/{session}/expire and 15+
+    other nested paths) therefore require no change here — downstream
+    consumers must treat these enums as open sets and tolerate unknown
+    values like `paypay`.    using Stripe's `x-stripeOperations` vendor extension on component
+    schemas — verified directly against a real spec3.sdk.json fetch:
+    components.schemas.payment_intent.x-stripeOperations includes e.g.
+    {"method_name": "capture", "method_on": "service", "operation": "post",
+     "path": "/v1/payment_intents/{intent}/capture", ...}.
+
+    Note: this index maps operations only; it does not enumerate enum
+    members. Enum additions to the shared `payment_intent` schema — such
+    as the new `paypay` value in
+    `payment_intent.excluded_payment_method_types[]`, which surfaces in
+    the 200 response of POST /v1/checkout/sessions/{session}/expire and
+    in 15+ other nested anyOf paths — require no change here. Consumers
+    must treat these enums as open sets and tolerate unknown values such
+    as `paypay` rather than validating against a fixed list.
 
     This is Stripe's own internal codegen convention (confirmed present,
     not officially documented as a stable contract) — treat symbol
@@ -171,11 +193,17 @@ def _build_operation_index(spec: dict) -> dict:
                 index[(verb, path)] = {'resource': resource_key, 'method_name': method_name}
     return index
 
-
 def _pascal_case(schema_key: str) -> str:
-    """'payment_intent' -> 'PaymentIntent' (Stripe's typical resource class naming)."""
-    return ''.join(part.capitalize() for part in re.split(r'[_.]', schema_key) if part)
+    """'payment_intent' -> 'PaymentIntent' (Stripe's typical resource class naming).
 
+    Purely a naming helper: it maps schema/resource keys to class names and does
+    not enumerate payment method types. Additive enum changes — such as the new
+    `paypay` value on `payment_intent.excluded_payment_method_types` (and the
+    same shared `payment_intent` schema reachable from Checkout Session
+    responses) — require no changes here, since unknown/new enum strings are
+    passed through as plain values rather than validated against a fixed list.
+    """
+    return ''.join(part.capitalize() for part in re.split(r'[_.]', schema_key) if part)
 
 # Deliberately not a real Stripe field name in the docstring example below
 # — an earlier version used a real one and it round-tripped straight into
