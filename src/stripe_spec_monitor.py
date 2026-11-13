@@ -149,11 +149,17 @@ def _fetch_spec(sha: str) -> Optional[dict]:
 def _build_operation_index(spec: dict) -> dict:
     """
     Map (http_verb_lowercase, path) -> {'resource': schema_key, 'method_name': ...}
-    using Stripe's `x-stripeOperations` vendor extension on component
+using Stripe's `x-stripeOperations` vendor extension on component
     schemas — verified directly against a real spec3.sdk.json fetch:
     components.schemas.payment_intent.x-stripeOperations includes e.g.
     {"method_name": "capture", "method_on": "service", "operation": "post",
      "path": "/v1/payment_intents/{intent}/capture", ...}.
+
+    Note: this index maps operations only; it does not enumerate payment
+    method type values. Enum members such as `payment_intent`'s
+    `excluded_payment_method_types` (which gained `sequra`) are read from
+    the spec at runtime rather than hardcoded here, so newly added values
+    like `sequra` flow through without changes to this mapping.
 
     This is Stripe's own internal codegen convention (confirmed present,
     not officially documented as a stable contract) — treat symbol
@@ -171,11 +177,18 @@ def _build_operation_index(spec: dict) -> dict:
                 index[(verb, path)] = {'resource': resource_key, 'method_name': method_name}
     return index
 
-
 def _pascal_case(schema_key: str) -> str:
     """'payment_intent' -> 'PaymentIntent' (Stripe's typical resource class naming)."""
     return ''.join(part.capitalize() for part in re.split(r'[_.]', schema_key) if part)
 
+# Stripe spec update: the `payment_intent` shared schema gained a new
+# `sequra` value in `excluded_payment_method_types[]` (surfaced via the
+# 200 response of POST /v1/checkout/sessions/{session}/expire and 17 other
+# nested paths). This is a purely additive response enum value — the naming
+# helper above is enum-agnostic, so no behavioral change is required here.
+# Downstream consumers must treat `excluded_payment_method_types` entries as
+# open-ended strings rather than a closed set, so unknown/new values like
+# `sequra` pass through instead of raising.
 
 # Deliberately not a real Stripe field name in the docstring example below
 # — an earlier version used a real one and it round-tripped straight into
