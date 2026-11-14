@@ -149,11 +149,17 @@ def _fetch_spec(sha: str) -> Optional[dict]:
 def _build_operation_index(spec: dict) -> dict:
     """
     Map (http_verb_lowercase, path) -> {'resource': schema_key, 'method_name': ...}
-    using Stripe's `x-stripeOperations` vendor extension on component
+using Stripe's `x-stripeOperations` vendor extension on component
     schemas — verified directly against a real spec3.sdk.json fetch:
     components.schemas.payment_intent.x-stripeOperations includes e.g.
     {"method_name": "capture", "method_on": "service", "operation": "post",
      "path": "/v1/payment_intents/{intent}/capture", ...}.
+
+    Note: only the `x-stripeOperations` entries are read here; the rest of
+    the `payment_intent` schema (including enum members such as the newly
+    added `interac_present` value in `allowed_payment_method_types`) is
+    treated as opaque, additive data. New enum values therefore flow
+    through untouched and require no change to this index.
 
     This is Stripe's own internal codegen convention (confirmed present,
     not officially documented as a stable contract) — treat symbol
@@ -171,11 +177,22 @@ def _build_operation_index(spec: dict) -> dict:
                 index[(verb, path)] = {'resource': resource_key, 'method_name': method_name}
     return index
 
-
 def _pascal_case(schema_key: str) -> str:
     """'payment_intent' -> 'PaymentIntent' (Stripe's typical resource class naming)."""
     return ''.join(part.capitalize() for part in re.split(r'[_.]', schema_key) if part)
 
+
+# Stripe spec change (2024): the shared `payment_intent` schema gained a new
+# `interac_present` value in `allowed_payment_method_types/items`. Enum growth is
+# additive, so no class/name mapping changes are required here — this helper only
+# derives resource class names from schema keys and never enumerates enum members.
+# Any downstream consumer must treat `allowed_payment_method_types` values as an
+# open set and tolerate unknown entries such as `interac_present`.
+KNOWN_ADDITIVE_ENUM_VALUES = {
+    'payment_intent': {
+        'allowed_payment_method_types': {'interac_present'},
+    },
+}
 
 # Deliberately not a real Stripe field name in the docstring example below
 # — an earlier version used a real one and it round-tripped straight into
