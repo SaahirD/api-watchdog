@@ -149,11 +149,17 @@ def _fetch_spec(sha: str) -> Optional[dict]:
 def _build_operation_index(spec: dict) -> dict:
     """
     Map (http_verb_lowercase, path) -> {'resource': schema_key, 'method_name': ...}
-    using Stripe's `x-stripeOperations` vendor extension on component
+using Stripe's `x-stripeOperations` vendor extension on component
     schemas — verified directly against a real spec3.sdk.json fetch:
     components.schemas.payment_intent.x-stripeOperations includes e.g.
     {"method_name": "capture", "method_on": "service", "operation": "post",
      "path": "/v1/payment_intents/{intent}/capture", ...}.
+
+    Note: only the operation metadata above is consumed here. Enum members
+    inside the `payment_intent` schema (e.g. the `sequra` value newly added
+    to `payment_intent.excluded_payment_method_types[]`) are treated as an
+    open, forward-compatible set: new values must flow through unmodified
+    and must never be validated against a hard-coded allow-list.
 
     This is Stripe's own internal codegen convention (confirmed present,
     not officially documented as a stable contract) — treat symbol
@@ -171,11 +177,13 @@ def _build_operation_index(spec: dict) -> dict:
                 index[(verb, path)] = {'resource': resource_key, 'method_name': method_name}
     return index
 
-
 def _pascal_case(schema_key: str) -> str:
     """'payment_intent' -> 'PaymentIntent' (Stripe's typical resource class naming)."""
+    # Note: purely additive enum values (e.g. the new `sequra` member of
+    # payment_intent.excluded_payment_method_types) are data-level values, not
+    # schema keys, so this helper needs no change — unknown/new enum members
+    # must simply be tolerated by callers rather than mapped here.
     return ''.join(part.capitalize() for part in re.split(r'[_.]', schema_key) if part)
-
 
 # Deliberately not a real Stripe field name in the docstring example below
 # — an earlier version used a real one and it round-tripped straight into
