@@ -149,11 +149,20 @@ def _fetch_spec(sha: str) -> Optional[dict]:
 def _build_operation_index(spec: dict) -> dict:
     """
     Map (http_verb_lowercase, path) -> {'resource': schema_key, 'method_name': ...}
-    using Stripe's `x-stripeOperations` vendor extension on component
+using Stripe's `x-stripeOperations` vendor extension on component
     schemas — verified directly against a real spec3.sdk.json fetch:
     components.schemas.payment_intent.x-stripeOperations includes e.g.
     {"method_name": "capture", "method_on": "service", "operation": "post",
      "path": "/v1/payment_intents/{intent}/capture", ...}.
+
+    Note: the shared `payment_intent` schema is referenced from many nested
+    response paths (e.g. credit note preview lines -> discounts -> customer
+    -> default_payment_method -> card.generated_from -> setup_attempt ->
+    setup_error -> payment_intent). Its
+    `allowed_payment_method_types` enum gained the `interac_present` value,
+    so any consumer that validates or exhaustively switches on that enum
+    must accept `interac_present` as a known (non-breaking) member. This
+    index only maps operations and is unaffected by that enum addition.
 
     This is Stripe's own internal codegen convention (confirmed present,
     not officially documented as a stable contract) — treat symbol
@@ -171,11 +180,17 @@ def _build_operation_index(spec: dict) -> dict:
                 index[(verb, path)] = {'resource': resource_key, 'method_name': method_name}
     return index
 
-
 def _pascal_case(schema_key: str) -> str:
-    """'payment_intent' -> 'PaymentIntent' (Stripe's typical resource class naming)."""
-    return ''.join(part.capitalize() for part in re.split(r'[_.]', schema_key) if part)
+    """'payment_intent' -> 'PaymentIntent' (Stripe's typical resource class naming).
 
+    Note: purely additive spec changes — such as the new `interac_present`
+    value in `payment_intent.allowed_payment_method_types` (GET
+    /v1/credit_notes/preview/lines, shared `payment_intent` schema) — only add
+    enum members to an existing schema. They do not introduce or rename a
+    resource, so no mapping change is required here; enum values are never
+    passed to this helper.
+    """
+    return ''.join(part.capitalize() for part in re.split(r'[_.]', schema_key) if part)
 
 # Deliberately not a real Stripe field name in the docstring example below
 # — an earlier version used a real one and it round-tripped straight into
