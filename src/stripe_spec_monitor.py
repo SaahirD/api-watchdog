@@ -149,11 +149,20 @@ def _fetch_spec(sha: str) -> Optional[dict]:
 def _build_operation_index(spec: dict) -> dict:
     """
     Map (http_verb_lowercase, path) -> {'resource': schema_key, 'method_name': ...}
-    using Stripe's `x-stripeOperations` vendor extension on component
+using Stripe's `x-stripeOperations` vendor extension on component
     schemas — verified directly against a real spec3.sdk.json fetch:
     components.schemas.payment_intent.x-stripeOperations includes e.g.
     {"method_name": "capture", "method_on": "service", "operation": "post",
      "path": "/v1/payment_intents/{intent}/capture", ...}.
+
+    Note: the `payment_intent` schema is a shared schema reached from many
+    response paths (e.g. the APIErrors `payment_intent` embedded under
+    setup_attempt.setup_error), and its enum-valued fields such as
+    `allowed_payment_method_types` gain new members over time — most
+    recently `interac_present`. Enum members here are informational only:
+    this index keys solely off `x-stripeOperations`, so never branch on an
+    exhaustive list of payment method type values; treat unknown values as
+    valid and pass them through unchanged.
 
     This is Stripe's own internal codegen convention (confirmed present,
     not officially documented as a stable contract) — treat symbol
@@ -171,11 +180,20 @@ def _build_operation_index(spec: dict) -> dict:
                 index[(verb, path)] = {'resource': resource_key, 'method_name': method_name}
     return index
 
-
 def _pascal_case(schema_key: str) -> str:
-    """'payment_intent' -> 'PaymentIntent' (Stripe's typical resource class naming)."""
-    return ''.join(part.capitalize() for part in re.split(r'[_.]', schema_key) if part)
+    """'payment_intent' -> 'PaymentIntent' (Stripe's typical resource class naming).
 
+    Purely lexical: it maps any snake_case/dotted schema or enum key to its
+    PascalCase form, so newly added enum members on shared schemas (e.g. the
+    `interac_present` value now allowed in
+    `payment_intent.allowed_payment_method_types[]`) need no change here —
+    `_pascal_case('interac_present')` already yields 'InteracPresent'.
+
+    Consumers must therefore treat these enums as open: never assume the set
+    of values is exhaustive, and fall back gracefully on unknown members
+    instead of raising.
+    """
+    return ''.join(part.capitalize() for part in re.split(r'[_.]', schema_key) if part)
 
 # Deliberately not a real Stripe field name in the docstring example below
 # — an earlier version used a real one and it round-tripped straight into
